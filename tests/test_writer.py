@@ -21,6 +21,8 @@ def test_case_files(tmp_path):
     for f in ["U", "p", "p_rgh", "T", "k", "omega", "nut", "alphat"]:
         assert (tmp_path / "0/air" / f).exists()
     assert "frozenFlow      false;" in (tmp_path / "system/air/fvSolution").read_text()
+    for solid in case.solid_regions:  # every solid gets its own solver settings
+        assert "SIMPLE" in (tmp_path / "system" / solid / "fvSolution").read_text()
 
 
 def test_laminar_has_no_turbulence_fields(tmp_path):

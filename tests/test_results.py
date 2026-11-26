@@ -12,7 +12,7 @@ pytest.importorskip("pyvista")
 from foam_fixture import write_case
 
 from airconstruct import results
-from airconstruct.case import Case
+from airconstruct.case import Case, Fan
 
 # frozen copy of the first example: the synthetic fixture mesh is built for this geometry
 EXAMPLE = Path(__file__).parent / "data" / "results_box.yaml"
@@ -295,3 +295,17 @@ def test_real_openfoam_mesh(tmp_path):
     out = results.write_report(case, d, tmp_path / "post")
     assert out.exists()
     shutil.copytree(tmp_path / "post", Path("runs") / "results_real_mesh", dirs_exist_ok=True)
+
+
+def test_fan_operating_point(case, case_dir):
+    c = case.model_copy(deep=True)
+    inlet = c.openings[0]
+    inlet.flow_rate = None
+    inlet.fan = Fan(curve=[(0.0, 40.0), (0.008, 0.0)])
+    s = results.summarize(c, case_dir)
+    (fan,) = s.fans
+    # 1 m/s through 80 x 40 mm
+    assert fan.name == inlet.name and fan.direction == "in"
+    assert fan.flow_rate_m3_s == pytest.approx(0.0032, rel=2e-3)
+    assert fan.pressure_rise_pa == pytest.approx(40.0 * (1 - fan.flow_rate_m3_s / 0.008))
+    assert results.summarize(case, case_dir).fans == []

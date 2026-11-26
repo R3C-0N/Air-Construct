@@ -1,0 +1,33 @@
+name: CI rapide
+
+# Fast checks for day-to-day work: every pull request and every push to `develop`.
+# Lint + unit tests on Linux only, no OpenFOAM run, no installer build.
+# The full CI (ci-full.yml, build.yml) runs only on `main`.
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-fast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Lint + unit tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Qt system libraries
+        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - run: pip install -e ".[dev,ui]"
+      - run: ruff check .
+      - run: pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen

@@ -1,0 +1,31 @@
+# Box cooled by a 60 mm intake fan with a curve, behind a finger guard grille.
+# Air leaves through a slotted vent (grille, 40 % open) on the opposite face.
+# The fan's operating point comes out of the simulation (curve x system resistance).
+name: fan_box
+enclosure: {x: 0.20, y: 0.12, z: 0.06}
+ambient_temperature: 25.0
+components:
+  - name: board
+    material: fr4
+    box: {origin: {x: 0.01, y: 0.01, z: 0.005}, size: {x: 0.18, y: 0.10, z: 0.002}}
+  - name: chip
+    material: silicon
+    power: 5.0
+    box: {origin: {x: 0.08, y: 0.045, z: 0.007}, size: {x: 0.03, y: 0.03, z: 0.004}}
+openings:
+  - name: fan
+    kind: inlet
+    face: xmin
+    center: [0.06, 0.03]
+    size: [0.05, 0.05]
+    fan:
+      curve: [[0.0, 25.0], [0.004, 18.0], [0.008, 8.0], [0.011, 0.0]]  # m3/s, Pa
+    grille: {open_area: 0.8}
+  - name: vent
+    kind: outlet
+    face: xmax
+    center: [0.06, 0.03]
+    size: [0.08, 0.04]
+    grille: {open_area: 0.4}
+precision: {level: 2}
+solver: {cores: 1}

@@ -51,7 +51,8 @@ Optional: `AIRCONSTRUCT_WSL_DISTRO` picks a distro other than the default one,
 
 ## Download (Windows / Linux)
 
-Every push to `main` builds the desktop app in GitHub Actions
+Every push to `main` (finished work merged from `develop`, see
+[CONTRIBUTING.md](CONTRIBUTING.md)) builds the desktop app in GitHub Actions
 ([Build desktop app](../../actions/workflows/build.yml)): open the latest run and download
 the `Air-Construct-windows-x64` artifact (installer `...-setup.exe`, or a portable `.zip`)
 or `Air-Construct-linux-x64` (`.tar.gz`). Tagging a version `v*` attaches the same
@@ -89,6 +90,25 @@ Phases end cleanly through SIGUSR1 (`-opt-switch stopAtWriteNowSignal=10`).
 
 Precision levels 1 to 5 set the mesh; `airconstruct check` prints the cell count and a
 run time estimate (`estimate.py`).
+
+## Fans, grilles and vents
+
+Each opening says what drives the air through it:
+
+| opening | OpenFOAM boundary (air region) |
+|---|---|
+| inlet with `flow_rate` / `velocity`, or `fan: {flow_rate: ...}` | fixed velocity |
+| inlet with `fan: {curve: [[Q, dp], ...]}` (m3/s, Pa) | `fanPressure`, direction in |
+| inlet with nothing: free vent | `prghTotalPressure` at ambient |
+| outlet | `prghPressure` at ambient |
+| outlet with `fan: {flow_rate: ...}` or `fan: {curve: ...}` | fixed velocity outwards / `fanPressure` out |
+
+With a curve, the operating point is a result: `results.summarize(...).fans` gives the
+flow rate and pressure rise of every fan, `airconstruct check` prints a 1D estimate
+(`fans.estimate_flow`). `grille: {open_area: 0.5}` (or `loss_coefficient: K`) on any
+opening adds a porous layer two cells deep just inside it (cellZone `grille_<name>`,
+Darcy-Forchheimer) that drops K rho u^2 / 2; K comes from the open-area ratio (Idelchik,
+thin perforated plate). See `examples/fan_box.yaml`.
 
 ## Conventions
 
