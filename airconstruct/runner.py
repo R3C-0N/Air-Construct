@@ -7,6 +7,7 @@ Public interface (used by cli and ui):
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,10 @@ class Backend:
 
 def detect_backend() -> Backend:
     """Pick LocalBackend on Linux, WslBackend on Windows."""
+    if sys.platform == "win32":
+        from .wsl import WslBackend
+
+        return WslBackend()
     raise NotImplementedError
 
 
