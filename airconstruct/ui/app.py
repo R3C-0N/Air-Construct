@@ -17,6 +17,7 @@ import math
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic import ValidationError
 from PySide6.QtCore import QSettings, Qt, QThread, QTimer, QUrl
@@ -89,6 +90,23 @@ def _default_estimate(case: Case) -> float:
     return estimate_runtime_s(case)
 
 
+def _default_preview(case: Case) -> dict[str, float]:
+    from ..thermal_estimate import estimate_temperatures
+
+    return estimate_temperatures(case)
+
+
+def expected_iterations(case: Case) -> int:
+    """Iterations a run usually takes (for the progress bar), never above the cap."""
+    try:
+        from ..estimate import ENERGY_ITERATIONS, FLOW_ITERATIONS
+
+        typical = FLOW_ITERATIONS + ENERGY_ITERATIONS
+    except ImportError:
+        typical = case.solver.iterations
+    return max(1, min(case.solver.iterations, typical))
+
+
 def _default_write_report(case: Case, case_dir: Path, out_dir: Path, summary=None) -> Path:
     from ..results import write_report
 
@@ -120,6 +138,22 @@ class ResultsPanel(QWidget):
     def clear(self, text: str = "No results yet. Press Run.") -> None:
         self.headline.setText(text)
         self.table.setRowCount(0)
+
+    def show_estimate(self, case: Case, temps: dict[str, float]) -> None:
+        """Instant lumped estimate (no CFD), shown until a run gives real numbers."""
+        self.headline.setText(
+            "Quick estimate (no CFD, rough and usually optimistic). Press Run for the "
+            "simulation."
+        )
+        power = {c.name: c.power for c in case.components}
+        rows = sorted(temps.items(), key=lambda kv: -kv[1] if math.isfinite(kv[1]) else math.inf)
+        self.table.setRowCount(len(rows))
+        for r, (name, t) in enumerate(rows):
+            for col, v in enumerate([name, _fmt(power.get(name, 0.0)), _fmt(t), "–"]):
+                item = QTableWidgetItem(v)
+                if col:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.table.setItem(r, col, item)
 
     def show_summary(self, summary) -> None:
         text = (
@@ -162,6 +196,7 @@ class MainWindow(QMainWindow):
         estimate_fn: Callable[[Case], float] | None = None,
         write_report_fn: Callable | None = None,
         open_report: bool = True,
+        preview_fn: Callable[[Case], dict[str, float]] | None = None,
     ) -> None:
         super().__init__()
         self.settings = QSettings("AirConstruct", "AirConstruct")
@@ -173,6 +208,7 @@ class MainWindow(QMainWindow):
         self._estimate_fn = estimate_fn or _default_estimate
         self._write_report_fn = write_report_fn or _default_write_report
         self._open_report = open_report
+        self._preview_fn = preview_fn or _default_preview
         self.last_report: Path | None = None
         self.thread: QThread | None = None
         self.worker: RunWorker | None = None
@@ -313,6 +349,19 @@ class MainWindow(QMainWindow):
         self.form.set_estimate(self.estimate_text(case))
         if force_geometry or self.outcome is None or not self.outcome.regions:
             self.view.show_case(case, reset_camera)
+        if self.outcome is None and self.thread is None:
+            self.show_preview(case)
+
+    def show_preview(self, case: Case) -> None:
+        try:
+            temps = self._preview_fn(case)
+        except NotImplementedError:
+            self.results.clear()
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.results.clear(f"No quick estimate: {exc}")
+            return
+        self.results.show_estimate(case, temps)
 
     def estimate_text(self, case: Case) -> str:
         try:
@@ -397,7 +446,7 @@ class MainWindow(QMainWindow):
         self.last_run_case = case
         self.log.clear()
         self.residual_label.setText("")
-        self.progress.setRange(0, max(1, case.solver.iterations))
+        self.progress.setRange(0, expected_iterations(case))
         self.progress.setValue(0)
         self.progress.setFormat("Starting…")
         self.run_button.setEnabled(False)
@@ -409,7 +458,7 @@ class MainWindow(QMainWindow):
                                 self._load_fn)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
-        self.worker.log.connect(self.log.appendPlainText)
+        self.worker.log.connect(self._on_log)
         self.worker.residual.connect(self._on_residual)
         self.worker.stage.connect(self._on_stage)
         self.worker.finished.connect(self._on_finished)
@@ -423,13 +472,31 @@ class MainWindow(QMainWindow):
             self.stop_button.setEnabled(False)
             self.progress.setFormat("Stopping…")
 
+    PHASES: ClassVar[dict[str, str]] = {"flow": "Solving air flow", "energy": "Solving temperatures",
+              "check": "Checking buoyancy"}
+
+    def _on_log(self, line: str) -> None:
+        self.log.appendPlainText(line)
+        if line.startswith("--- phase "):
+            name = line[len("--- phase "):].split(":")[0].strip()
+            self._on_stage(self.PHASES.get(name, name))
+        elif line.startswith("$ "):
+            cmd = line[2:].split()[0] if line[2:].split() else ""
+            if cmd not in ("mpirun",) and not cmd.startswith("chtMultiRegion"):
+                self._on_stage(f"Meshing ({cmd})")
+
     def _on_stage(self, stage: str) -> None:
         if stage == "Post-processing":
             self.progress.setRange(0, 0)  # busy indicator
-        self.progress.setFormat(f"{stage}… %v / %m")
+            self.progress.setFormat("Post-processing…")
+        else:
+            self.progress.setFormat(f"{stage}… iteration %v")
         self.status.showMessage(stage)
 
     def _on_residual(self, iteration: int, residuals: dict) -> None:
+        cap = self.last_run_case.solver.iterations if self.last_run_case else iteration
+        if 0 < self.progress.maximum() < iteration:  # longer than usual: show the cap
+            self.progress.setMaximum(max(iteration, cap))
         if self.progress.maximum() > 0:
             self.progress.setValue(min(iteration, self.progress.maximum()))
         if residuals:

@@ -51,6 +51,10 @@ def opening_bounds(case: Case, opening) -> tuple[float, float, float, float, flo
     return (lo[0], hi[0], lo[1], hi[1], lo[2], hi[2])
 
 
+PASSIVE_COLORS = {"fr4": "#3f7f4f", "aluminium": "#b8c2cc", "copper": "#c87533",
+                  "steel": "#7d8790", "plastic_abs": "#d9d4c7", "silicon": "#5b6470"}
+
+
 def _heat_color(power: float, p_max: float) -> str:
     if power <= 0:
         return "#9aa5b1"
@@ -70,7 +74,13 @@ def geometry_items(case: Case) -> list[SceneItem]:
     for c in case.components:
         lo, hi = c.box.min, c.box.max
         mesh = pv.Box((lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]))
-        items.append(SceneItem(c.name, mesh, _heat_color(c.power, p_max)))
+        edges = {"show_edges": True, "edge_color": "#333333", "line_width": 1}
+        if c.power > 0:
+            items.append(SceneItem(c.name, mesh, _heat_color(c.power, p_max), kwargs=edges))
+        else:  # passive part: material colour, see-through so heat sources stay visible
+            color = PASSIVE_COLORS.get(c.material, "#9aa5b1")
+            opacity = 1.0 if c.material == "fr4" else 0.45
+            items.append(SceneItem(c.name, mesh, color, opacity=opacity, kwargs=edges))
     for o in case.openings:
         color = "#2f80ed" if o.kind == OpeningKind.inlet else "#27ae60"
         items.append(SceneItem(o.name, pv.Box(opening_bounds(case, o)), color, opacity=0.7))
