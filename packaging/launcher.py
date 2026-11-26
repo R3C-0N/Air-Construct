@@ -114,13 +114,20 @@ def main() -> int:
 
 def _exit_now(code: int) -> None:
     """Exit without interpreter teardown. Once the window is closed (MainWindow.closeEvent
-    releases the VTK view), destroying the remaining Qt and VTK objects in arbitrary
-    order can crash on Windows (0xC0000409), turning a clean exit into an error code."""
+    releases the VTK view), destroying the remaining Qt and VTK objects can crash on
+    Windows (0xC0000409 / 0xC0000005), even from os._exit, because DLL unload handlers
+    still run. TerminateProcess skips them; the exit code is kept."""
     for stream in (sys.stdout, sys.stderr):
         if stream is not None:
             stream.flush()
-    os._exit(code)
+    if sys.platform == "win32":
+        import ctypes
 
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        k32.TerminateProcess(k32.GetCurrentProcess(), code & 0xFFFFFFFF)
+    os._exit(code)
 
 if __name__ == "__main__":
     _exit_now(main())
