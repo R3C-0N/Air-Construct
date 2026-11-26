@@ -29,6 +29,9 @@ airconstruct-gui = "airconstruct.ui.app:main"
 [tool.setuptools.packages.find]
 include = ["airconstruct*"]
 
+[tool.setuptools.package-data]
+"airconstruct.ui" = ["fonts/*.ttf", "fonts/*.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["openfoam: needs an OpenFOAM installation (run with -m openfoam)"]

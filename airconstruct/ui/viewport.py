@@ -12,7 +12,15 @@ from __future__ import annotations
 
 import dataclasses
 
-from PySide6.QtWidgets import QHBoxLayout, QStackedWidget, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QFrame,
+    QHBoxLayout,
+    QStackedWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .selection import Selection
 from .view import CAMERAS, SceneItem, SceneView
@@ -46,30 +54,47 @@ class Viewport(QWidget):
         self.scene = SceneView()
         self.items: list[SceneItem] = []  # as given by the tab, before highlighting
 
+        # the active tab's toolbar, on a card above the view (hidden when none)
+        self.toolbar_card = QFrame()
+        self.toolbar_card.setObjectName("card")
+        tl = QHBoxLayout(self.toolbar_card)
+        tl.setContentsMargins(8, 4, 8, 4)
         self.tab_toolbars = QStackedWidget()
         self.tab_toolbars.addWidget(QWidget())  # empty slot
-        bar = QHBoxLayout()
-        bar.setContentsMargins(4, 2, 4, 2)
-        bar.addWidget(self.tab_toolbars, 1)
+        tl.addWidget(self.tab_toolbars)
+        self.toolbar_card.setVisible(False)
+
+        # camera presets: a card the window places under the view (bottom left)
+        self.camera_card = QFrame()
+        self.camera_card.setObjectName("card")
+        cl = QHBoxLayout(self.camera_card)
+        cl.setContentsMargins(4, 4, 4, 4)
+        cl.setSpacing(2)
         self.camera_buttons: dict[str, QToolButton] = {}
+        group = QButtonGroup(self)
         for key, label in CAMERAS.items():
             b = QToolButton()
             b.setText(label)
             b.setToolTip(f"Vue {label.lower()}")
+            b.setCheckable(True)
+            b.setProperty("kind", "segment")
             b.clicked.connect(lambda _=False, k=key: self.scene.set_camera(k))
-            bar.addWidget(b)
+            group.addButton(b)
+            cl.addWidget(b)
             self.camera_buttons[key] = b
+        self.camera_buttons["iso"].setChecked(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addLayout(bar)
+        layout.setSpacing(8)
+        layout.addWidget(self.toolbar_card)
         layout.addWidget(self.scene, 1)
 
         self.scene.picked.connect(self._on_picked)
         selection.changed.connect(lambda _keys: self._redraw())
 
     def set_tab_toolbar(self, widget: QWidget | None) -> None:
+        self.toolbar_card.setVisible(widget is not None)
         if widget is None:
             self.tab_toolbars.setCurrentIndex(0)
             return

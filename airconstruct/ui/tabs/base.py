@@ -16,11 +16,13 @@ from typing import ClassVar
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QWidget
 
 from ..alerts import Alert
 from ..context import AppContext
+from ..theme import set_prop
 from ..view import SceneItem
+from ..widgets.card import Card
 
 
 class StepTab(QObject):
@@ -69,15 +71,14 @@ class StepTab(QObject):
         """Another tab was opened."""
 
 
-def placeholder(text: str) -> QWidget:
-    """A panel saying what will come here."""
-    w = QWidget()
-    lay = QVBoxLayout(w)
+def placeholder(text: str, title: str | None = "À venir") -> QWidget:
+    """A card saying what will come here."""
+    card = Card(title)
     label = QLabel(text)
     label.setWordWrap(True)
     label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
     label.setObjectName("placeholder")
-    label.setStyleSheet("color: #6B7280;")
-    lay.addWidget(label)
-    lay.addStretch(1)
-    return w
+    set_prop(label, role="muted")
+    card.body.addWidget(label)
+    card.body.addStretch(1)
+    return card

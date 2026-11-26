@@ -12,9 +12,11 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QScrollArea, QWidget
 
 from ...form import CaseForm, FormError, format_duration
+from ...theme import set_prop
+from ...widgets.card import Card
 from ...widgets.object_tree import ObjectTree
 from ..base import StepTab
 
@@ -93,23 +95,19 @@ class ModelTab(StepTab):
         self.binding = LegacyFormBinding(ctx, self.form)
         ctx.runner.running_changed.connect(lambda running: self.form.setEnabled(not running))
 
-        self._left = QWidget()
-        lay = QVBoxLayout(self._left)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lay.addWidget(QLabel("<b>Modèle</b>"))
-        lay.addWidget(self.tree, 1)
+        self._left = Card("Modèle", margins=(6, 6, 6, 6))
+        self._left.body.addWidget(self.tree, 1)
 
-        self._right = QWidget()
-        rl = QVBoxLayout(self._right)
-        rl.setContentsMargins(0, 0, 0, 0)
-        note = QLabel("Éditeur provisoire (sera remplacé par l’inspecteur de chaque étape).")
+        self._right = Card("Éditeur provisoire")
+        rl = self._right.body
+        note = QLabel("Sera remplacé par l’inspecteur de chaque étape.")
         note.setWordWrap(True)
-        note.setStyleSheet("color: #6B7280;")
+        set_prop(note, role="muted")
         rl.addWidget(note)
         scroll = QScrollArea()
         scroll.setWidget(self.form)
         scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(480)
+        scroll.setMinimumWidth(440)
         rl.addWidget(scroll, 1)
 
     def left_panel(self) -> QWidget:
