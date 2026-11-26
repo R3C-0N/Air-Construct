@@ -55,6 +55,9 @@ class Backend:
         """Make the running solver write its state and exit cleanly."""
         raise NotImplementedError
 
+    def stop(self) -> None:
+        """Terminate the running command (fallback when write_now is ignored)."""
+
 
 def find_bashrc() -> str | None:
     env = os.environ.get("AIRCONSTRUCT_FOAM_BASHRC")
@@ -131,6 +134,9 @@ def detect_backend() -> Backend:
         return WslBackend()
     return LocalBackend()
 
+
+END_TIME_MARGIN = 1_000_000  # see run_phase
+WRITE_NOW_GRACE = 50  # iterations to wait for write_now before stop()
 
 _RES = re.compile(r"Solving for (\w+), Initial residual = ([0-9.eE+-]+)")
 _TIME = re.compile(r"^Time = (\d+)")
@@ -335,9 +341,11 @@ def run_case(
         end = min(budget, start + max_its)
         if end <= start:
             return True
-        # endTime a bit past the cap: the phase always ends through write_now, so the
-        # last state is written whatever the writeInterval
-        set_phase(frozen, end + 10)
+        # endTime far past the cap: a phase always ends through write_now (so the last
+        # state is written whatever the writeInterval) and never by reaching endTime, so
+        # the signal cannot land while the solver is already exiting, however late the
+        # watcher reads the output. stop() is the fallback if the signal gets lost.
+        set_phase(frozen, end + END_TIME_MARGIN)
         parser.reset_window()
         requested = {"v": False}
         log(f"--- phase {name}: iterations {start}..{end}{' (frozen flow)' if frozen else ''}")
@@ -345,12 +353,18 @@ def run_case(
         def watch(line: str) -> None:
             nonlocal stopped
             parser.feed(line)
-            if not line.startswith("ExecutionTime") or requested["v"]:
+            if not line.startswith("ExecutionTime"):
+                return
+            if requested["v"]:
+                if parser.iteration >= requested["at"] + WRITE_NOW_GRACE:
+                    log("--- solver ignored the write-now signal, stopping it")
+                    backend.stop()
                 return
             user_stop = bool(should_stop and should_stop())
             if user_stop or done() or parser.iteration >= end:
                 stopped = stopped or user_stop
                 requested["v"] = True
+                requested["at"] = parser.iteration
                 backend.write_now()
 
         ok = step(solve, SOLVER_APP, watch, mode="a")
