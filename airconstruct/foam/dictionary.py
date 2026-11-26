@@ -57,7 +57,7 @@ def fmt_entries(d: dict, indent: int = 0) -> str:
         elif v is None:
             out.append(f"{pad}{_key(k)};\n")
         else:
-            out.append(f"{pad}{_key(k):<16}{fmt_value(v, indent)};\n")
+            out.append(f"{pad}{_key(k):<15} {fmt_value(v, indent)};\n")
     return "".join(out)
 
 
