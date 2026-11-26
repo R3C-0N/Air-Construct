@@ -22,7 +22,7 @@ from pathlib import Path
 from ..case import Case, Component, OpeningKind
 from ..materials import GASES, SOLIDS
 from ..mesh import FACE_AXES
-from .dictionary import write_foam_dict
+from .dictionary import Raw, write_foam_dict
 
 SOLVER_APP = "chtMultiRegionSimpleFoam"
 K0 = 273.15
@@ -103,6 +103,8 @@ def _control_dict(case: Case) -> dict:
         "runTimeModifiable": True,
         # SIGUSR1 = write now and stop: used by the runner to end a phase cleanly
         "OptimisationSwitches": {"stopAtWriteNowSignal": 10},
+        # live monitors (function objects) written by the runner, see foam/monitors.py
+        "functions": {"monitors": Raw('#includeIfPresent "monitors"')},
     }
 
 

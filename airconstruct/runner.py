@@ -40,6 +40,9 @@ class RunResult:
     errors: list[str] = field(default_factory=list)
     # last "Min/max T" printed per region, in degC: {region: (t_min, t_max)}
     region_temperatures: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # last live snapshot (monitor.Progress): residuals per region and field, min/mean/max
+    # temperature per region, heat to the air per part, flow through the openings
+    progress: object | None = None
 
 
 class Backend:
@@ -240,6 +243,8 @@ def run_case(
     on_log: LogCallback | None = None,
     on_residual: ResidualCallback | None = None,
     should_stop: Callable[[], bool] | None = None,
+    on_progress: Callable | None = None,
+    monitors: bool = True,
 ) -> RunResult:
     """Full pipeline in work_dir/<case.name>. Returns when the solver ends.
 
@@ -251,9 +256,17 @@ def run_case(
       3. "check": flow unfrozen again for a short while, so buoyancy can react to the new
          temperatures. If temperatures moved, go back to 2 (at most 3 cycles).
     case.solver.iterations caps the total number of iterations.
+
+    on_progress(monitor.Progress) is called after every iteration with the residuals of
+    every field in every region, the min/mean/max temperature of every region, the
+    heat each part gives to the air and the flow through the openings (OpenFOAM
+    function objects, see foam/monitors.py); the same snapshots are appended to
+    <case_dir>/monitor.jsonl. monitors=False leaves the function objects out.
     """
+    from .foam.monitors import write_monitors
     from .foam.writer import SOLVER_APP, write_case_setup, write_initial_fields
     from .mesh import mesh_commands, write_mesh_dicts
+    from .monitor import RunMonitor
 
     backend = backend or detect_backend()
     case_dir = Path(work_dir) / case.name
@@ -265,6 +278,7 @@ def run_case(
     errors: list[str] = []
     log_lines: list[str] = []
     parser = ResidualParser(on_residual, tol=case.solver.convergence_tol * 10)
+    monitor = RunMonitor(case, on_progress, case_dir / "monitor.jsonl")
 
     def log(line: str) -> None:
         log_lines.append(line)
@@ -275,7 +289,7 @@ def run_case(
 
     def result(ok: bool, converged: bool = False) -> RunResult:
         return RunResult(case_dir, ok, converged, parser.iteration, time.time() - t0, errors,
-                         parser.temperatures_c())
+                         parser.temperatures_c(), monitor.last)
 
     def step(argv: list[str], logname: str, on_line_extra: Callable[[str], None] | None = None,
              mode: str = "w") -> bool:
@@ -304,6 +318,7 @@ def run_case(
         return code == 0
 
     write_case_setup(case, case_dir)
+    write_monitors(case, case_dir, monitors)
     write_mesh_dicts(case, case_dir)
     for argv in mesh_commands(case):
         name = argv[0] + ("." + argv[-1].split(".")[-1] if argv[0] == "topoSet" else "")
@@ -325,6 +340,7 @@ def run_case(
     fv_air = case_dir / "system" / case.fluid_region / "fvSolution"
     budget = case.solver.iterations
     stopped = False
+    monitor_state = {"on": monitors}
 
     def set_phase(frozen: bool, end: int) -> None:
         txt = control.read_text()
@@ -349,10 +365,12 @@ def run_case(
         parser.reset_window()
         requested = {"v": False}
         log(f"--- phase {name}: iterations {start}..{end}{' (frozen flow)' if frozen else ''}")
+        monitor.phase = name
 
         def watch(line: str) -> None:
             nonlocal stopped
             parser.feed(line)
+            monitor.feed(line)
             if not line.startswith("ExecutionTime"):
                 return
             if requested["v"]:
@@ -367,8 +385,18 @@ def run_case(
                 requested["at"] = parser.iteration
                 backend.write_now()
 
+        n_errors = len(errors)
         ok = step(solve, SOLVER_APP, watch, mode="a")
+        if not ok and parser.iteration == start and monitor_state["on"]:
+            # some OpenFOAM builds cannot run function objects at all (e.g. the Debian
+            # v1912 package fails in functionObjectList::read): retry without them
+            monitor_state["on"] = False
+            del errors[n_errors:]
+            log("--- the solver failed to start with the live monitors, retrying without them")
+            write_monitors(case, case_dir, False)
+            ok = step(solve, SOLVER_APP, watch, mode="a")
         parser.close()
+        monitor.flush()
         return ok
 
     converged = False
