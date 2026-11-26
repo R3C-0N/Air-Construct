@@ -23,7 +23,8 @@ from airconstruct.runner import RunResult
 from airconstruct.ui.app import MainWindow
 from airconstruct.ui.form import CaseForm, FormError, format_duration
 
-EXAMPLE = Path(__file__).parent.parent / "examples" / "electronics_box.yaml"
+# frozen copy of the first example (the tests assert on its components)
+EXAMPLE = Path(__file__).parent / "data" / "results_box.yaml"
 
 
 @pytest.fixture(scope="module")
