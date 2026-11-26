@@ -22,7 +22,9 @@ case.yaml ──> mesh.py ──> foam/writer.py ──> runner.py ──> resul
 - `airconstruct/foam/`: OpenFOAM dictionary writer and case setup.
 - `airconstruct/runner.py`: execution (Linux native, Windows through WSL2).
 - `airconstruct/results.py`: post-processing and report.
-- `airconstruct/ui/`: PySide6 desktop window.
+- `airconstruct/ui/`: PySide6 desktop window: a shell with five step tabs (Modèle, Air,
+  Volume d'air, Simulation, Résultats) over a shared 3D view, see
+  [docs/ui-architecture.md](docs/ui-architecture.md).
 
 ## Requirements
 

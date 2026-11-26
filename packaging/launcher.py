@@ -32,18 +32,30 @@ def self_test() -> int:
     report: list[str] = []
 
     import airconstruct
-    from airconstruct import case, cli, estimate, materials, mesh, results, runner, wsl  # noqa: F401
+    from airconstruct import (  # noqa: F401
+        case,
+        cli,
+        estimate,
+        materials,
+        mesh,
+        results,
+        runner,
+        wsl,
+    )
     from airconstruct.foam import writer  # noqa: F401
 
     report.append(f"airconstruct {getattr(airconstruct, '__version__', '?')}")
 
     import numpy
     import pydantic
+    import pyqtgraph
     import pyvista
+    import superqt
     import vtkmodules
 
     report.append(f"numpy {numpy.__version__}, pydantic {pydantic.__version__}, "
-                  f"pyvista {pyvista.__version__}, vtk {vtkmodules.__version__}")
+                  f"pyvista {pyvista.__version__}, vtk {vtkmodules.__version__}, "
+                  f"superqt {superqt.__version__}, pyqtgraph {pyqtgraph.__version__}")
 
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
