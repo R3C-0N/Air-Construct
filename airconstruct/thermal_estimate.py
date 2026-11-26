@@ -20,6 +20,7 @@ from __future__ import annotations
 import numpy as np
 
 from .case import Case, Component, OpeningKind
+from .fans import estimate_flow
 from .materials import GASES, SOLIDS
 from .mesh import FACE_AXES
 
@@ -50,12 +51,11 @@ def air_state(case: Case) -> tuple[float, float, float]:
     gas = GASES[case.fluid]
     t_in = case.ambient_temperature
     rho = case.ambient_pressure * gas.mol_weight * 1e-3 / (8.314 * (t_in + 273.15))
-    q = 0.0
+    q = estimate_flow(case).flow_rate
     a_cross = 1.0
     E = case.enclosure.as_tuple()
     for o in case.openings:
         if o.kind == OpeningKind.inlet:
-            q += o.normal_velocity() * o.area()
             _, _, (a, b) = FACE_AXES[o.face]
             a_cross = E[a] * E[b]
     mdot = rho * q

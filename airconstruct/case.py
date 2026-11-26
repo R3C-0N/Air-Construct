@@ -9,6 +9,7 @@ inside it. Openings (inlets/outlets) are rectangles lying on one enclosure face.
 
 from __future__ import annotations
 
+import itertools
 from enum import Enum
 from pathlib import Path
 
@@ -69,13 +70,76 @@ class Component(BaseModel):
 
 
 class OpeningKind(str, Enum):
-    inlet = "inlet"  # fixed velocity / flow rate, fixed temperature
-    outlet = "outlet"  # fixed static pressure
+    inlet = "inlet"  # air comes in: imposed flow, intake fan, or free (pressure) vent
+    outlet = "outlet"  # air goes out: fixed static pressure, or exhaust fan
+
+
+class Grille(BaseModel):
+    """Grille, perforated plate or filter covering an opening.
+
+    Modelled as a thin porous layer of air just inside the opening (Darcy-Forchheimer,
+    quadratic term only): pressure loss dp = K * rho * u^2 / 2, u being the approach
+    velocity through the opening. K comes from the open-area ratio (Idelchik, thin
+    sharp-edged perforated plate) unless ``loss_coefficient`` is given."""
+
+    open_area: float = Field(default=0.5, gt=0.0, le=1.0)  # free area / opening area [-]
+    loss_coefficient: float | None = Field(default=None, ge=0.0)  # K [-], overrides open_area
+
+    def k(self) -> float:
+        if self.loss_coefficient is not None:
+            return self.loss_coefficient
+        b = self.open_area
+        return (0.707 * (1.0 - b) ** 0.5 + 1.0 - b) ** 2 / b**2
+
+
+class Fan(BaseModel):
+    """Fan mounted on an opening: on an inlet it blows air in, on an outlet it extracts.
+
+    Either a fixed volumetric ``flow_rate``, or a fan ``curve``: (flow rate [m3/s],
+    static pressure rise [Pa]) points, flow rates increasing. With a curve the operating
+    point comes out of the simulation (where the curve meets the system resistance)."""
+
+    flow_rate: float | None = Field(default=None, gt=0.0)  # [m3/s]
+    curve: list[tuple[float, float]] | None = None  # [(Q m3/s, dp Pa), ...]
+
+    @model_validator(mode="after")
+    def _one_spec(self) -> Fan:
+        if (self.flow_rate is None) == (self.curve is None):
+            raise ValueError("a fan needs either flow_rate or curve")
+        if self.curve is not None:
+            c = self.curve
+            if len(c) < 2:
+                raise ValueError("a fan curve needs at least 2 points")
+            if any(q < 0 or dp < 0 for q, dp in c):
+                raise ValueError("fan curve flow rates and pressures must be >= 0")
+            if any(b[0] <= a[0] for a, b in itertools.pairwise(c)):
+                raise ValueError("fan curve flow rates must be increasing")
+            if any(b[1] > a[1] + 1e-12 for a, b in itertools.pairwise(c)):
+                raise ValueError("fan curve pressure must not increase with flow rate")
+        return self
+
+    def pressure_at(self, q: float) -> float:
+        """Static pressure rise [Pa] at flow rate q (curve clamped at its ends)."""
+        assert self.curve is not None
+        qs, dps = zip(*self.curve)
+        if q <= qs[0]:
+            return dps[0]
+        for (q0, p0), (q1, p1) in itertools.pairwise(self.curve):
+            if q <= q1:
+                return p0 + (p1 - p0) * (q - q0) / (q1 - q0)
+        return dps[-1]
 
 
 class Opening(BaseModel):
     """Rectangle on an enclosure face. center/size are the 2 in-plane coordinates
-    in axis order (for xmin/xmax: (y, z); ymin/ymax: (x, z); zmin/zmax: (x, y))."""
+    in axis order (for xmin/xmax: (y, z); ymin/ymax: (x, z); zmin/zmax: (x, y)).
+
+    What drives the flow through it:
+    - inlet with flow_rate or velocity: imposed flow (as a fan with a known flow rate);
+    - inlet with a fan: fixed fan flow rate, or a fan curve;
+    - inlet with neither: free vent, air enters at ambient total pressure;
+    - outlet: ambient static pressure, or an exhaust fan (flow rate or curve).
+    A grille adds its pressure loss to any of them."""
 
     name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     kind: OpeningKind
@@ -84,23 +148,43 @@ class Opening(BaseModel):
     size: tuple[float, float]
     flow_rate: float | None = None  # inlet volumetric flow [m3/s]; or velocity
     velocity: float | None = None  # inlet normal velocity [m/s]
-    temperature: float | None = None  # inlet temperature [degC]; default ambient
+    temperature: float | None = None  # temperature of the air coming in [degC]; default ambient
+    fan: Fan | None = None
+    grille: Grille | None = None
 
     @model_validator(mode="after")
-    def _inlet_has_flow(self) -> Opening:
-        if self.kind == OpeningKind.inlet and self.flow_rate is None and self.velocity is None:
-            raise ValueError(f"inlet {self.name!r} needs flow_rate or velocity")
+    def _flow_spec(self) -> Opening:
+        imposed = self.flow_rate is not None or self.velocity is not None
+        if imposed and self.kind == OpeningKind.outlet:
+            raise ValueError(f"outlet {self.name!r}: set the flow with an exhaust fan, "
+                             "not flow_rate/velocity")
+        if imposed and self.fan is not None:
+            raise ValueError(f"opening {self.name!r}: give flow_rate/velocity or a fan, not both")
         return self
 
     def area(self) -> float:
         return self.size[0] * self.size[1]
 
+    @property
+    def fixed_flow(self) -> bool:
+        """True when the flow rate through the opening is imposed."""
+        return (self.flow_rate is not None or self.velocity is not None
+                or (self.fan is not None and self.fan.flow_rate is not None))
+
+    @property
+    def fan_curve(self) -> bool:
+        return self.fan is not None and self.fan.curve is not None
+
     def normal_velocity(self) -> float:
-        """Inlet speed [m/s] (positive = into the domain)."""
+        """Imposed speed [m/s] through the opening, positive in the opening's own
+        direction (into the domain for an inlet, out of it for an outlet)."""
         if self.velocity is not None:
             return self.velocity
-        assert self.flow_rate is not None
-        return self.flow_rate / self.area()
+        if self.flow_rate is not None:
+            return self.flow_rate / self.area()
+        if self.fan is not None and self.fan.flow_rate is not None:
+            return self.fan.flow_rate / self.area()
+        raise ValueError(f"opening {self.name!r} has no imposed flow rate")
 
 
 class Precision(BaseModel):
@@ -155,6 +239,9 @@ class Case(BaseModel):
             raise ValueError("the case needs at least one inlet")
         if not any(o.kind == OpeningKind.outlet for o in self.openings):
             raise ValueError("the case needs at least one outlet")
+        if all(o.fixed_flow for o in self.openings):
+            raise ValueError("every opening has an imposed flow rate: at least one must be "
+                             "a free vent, a plain outlet or a fan with a curve")
         return self
 
     # --- persistence -------------------------------------------------------

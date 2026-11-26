@@ -4,7 +4,8 @@ Owned by: workstream "solver setup".
 
 Layout produced in case_dir (OpenFOAM.com, steady conjugate heat transfer):
   constant/regionProperties
-  constant/air/{thermophysicalProperties, g, turbulenceProperties, radiationProperties}
+  constant/air/{thermophysicalProperties, g, turbulenceProperties, radiationProperties,
+               fvOptions (porous layers of the grilles)}
   constant/<solid>/{thermophysicalProperties, radiationProperties, fvOptions (if power>0)}
   system/{controlDict, fvSchemes, fvSolution, decomposeParDict}
   system/<region>/{fvSchemes, fvSolution, decomposeParDict}
@@ -19,9 +20,10 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from ..case import Case, Component, OpeningKind
+from ..case import Case, Component, Opening, OpeningKind
+from ..fans import air_density, estimate_flow, opening_velocity
 from ..materials import GASES, SOLIDS
-from ..mesh import FACE_AXES
+from ..mesh import FACE_AXES, grille_depth, grille_zone, plan_mesh
 from .dictionary import write_foam_dict
 
 SOLVER_APP = "chtMultiRegionSimpleFoam"
@@ -219,6 +221,9 @@ def write_case_setup(case: Case, case_dir: Path) -> None:
         write_foam_dict(cs / "radiationProperties", {"radiation": "off", "radiationModel": "none"})
         if comp.power > 0:
             write_foam_dict(cs / "fvOptions", _heat_source(comp))
+    grilles = _grille_sources(case, grille_depth(case, plan_mesh(case).cell_size))
+    if grilles:
+        write_foam_dict(c / "fvOptions", grilles)
         write_foam_dict(sysd / comp.name / "fvSchemes", _solid_schemes())
         write_foam_dict(sysd / comp.name / "fvSolution", _solid_solution(case))
         write_foam_dict(sysd / comp.name / "decomposeParDict", _decompose(max(1, case.solver.cores)))
@@ -229,24 +234,107 @@ def _vol(cls: str, dims: str, internal: str, bf: dict) -> tuple[dict, str]:
     return {"dimensions": dims, "internalField": internal, "boundaryField": bf}, cls
 
 
-def _inlet_vector(case: Case, name: str) -> str:
-    o = next(o for o in case.openings if o.name == name)
+def _fixed_vector(case: Case, o: Opening) -> str:
+    """Imposed velocity vector of a fixed-flow opening (inwards for inlets)."""
     normal, at_max, _ = FACE_AXES[o.face]
+    inward = 1.0 if o.kind == OpeningKind.inlet else -1.0
     v = [0.0, 0.0, 0.0]
-    v[normal] = -o.normal_velocity() if at_max else o.normal_velocity()
+    v[normal] = inward * o.normal_velocity() * (-1.0 if at_max else 1.0)
     return f"uniform ({v[0]:g} {v[1]:g} {v[2]:g})"
 
 
 def _turbulence_inlet(case: Case) -> tuple[float, float]:
     """k and omega at inlets from 5 % intensity and a length scale of 7 % of the opening."""
     k, om = 1e-6, 1.0
+    est = estimate_flow(case)
     for o in case.openings:
         if o.kind == OpeningKind.inlet:
-            u = abs(o.normal_velocity())
+            u = opening_velocity(case, o, est)
             dh = 2 * o.size[0] * o.size[1] / (o.size[0] + o.size[1])
             k = max(k, 1.5 * (0.05 * u) ** 2)
             om = max(om, math.sqrt(k) / (0.09**0.25 * 0.07 * dh))
     return k, om
+
+
+def opening_p0(case: Case, o: Opening) -> float:
+    """Ambient pressure expressed as p_rgh at the opening's centre.
+
+    p_rgh = p - rho g.h with h measured from z = 0 (hRef = 0), so outside air at the
+    ambient pressure has p_rgh = p_amb + rho_amb |g| z. prghPressure and
+    prghTotalPressure do this themselves; fanPressure does not, so it gets p0 shifted."""
+    if not case.solver.gravity:
+        return case.ambient_pressure
+    normal, at_max, _ = FACE_AXES[o.face]
+    if normal == 2:
+        z = case.enclosure.z if at_max else 0.0
+    else:
+        z = o.center[1]  # vertical faces: the second in-plane axis is z
+    return case.ambient_pressure + air_density(case) * 9.81 * z
+
+
+def _fan_curve(o: Opening) -> str:
+    assert o.fan is not None and o.fan.curve is not None
+    return "table (" + " ".join(f"({q:g} {dp:g})" for q, dp in o.fan.curve) + ")"
+
+
+def _opening_bcs(case: Case, o: Opening, k0: float, om0: float) -> dict[str, dict]:
+    """Boundary condition of every air field on one opening."""
+    t_in = _tk(o.temperature if o.temperature is not None else case.ambient_temperature)
+    p0 = case.ambient_pressure
+    calc = {"type": "calculated", "value": "$internalField"}
+    out = {
+        "p": calc,
+        "T": {"type": "inletOutlet", "inletValue": f"uniform {t_in}", "value": "$internalField"},
+        "k": {"type": "inletOutlet", "inletValue": f"uniform {k0:.6g}", "value": "$internalField"},
+        "omega": {"type": "inletOutlet", "inletValue": f"uniform {om0:.6g}",
+                  "value": "$internalField"},
+        "nut": {"type": "calculated", "value": "uniform 0"},
+        "alphat": {"type": "calculated", "value": "uniform 0"},
+        "U": {"type": "pressureInletOutletVelocity", "value": "uniform (0 0 0)"},
+    }
+    if o.fixed_flow:
+        out["U"] = {"type": "fixedValue", "value": _fixed_vector(case, o)}
+        out["p_rgh"] = {"type": "fixedFluxPressure", "value": "$internalField"}
+        if o.kind == OpeningKind.inlet:
+            out["T"] = {"type": "fixedValue", "value": f"uniform {t_in}"}
+            out["k"] = {"type": "fixedValue", "value": f"uniform {k0:.6g}"}
+            out["omega"] = {"type": "fixedValue", "value": f"uniform {om0:.6g}"}
+    elif o.fan_curve:
+        out["p_rgh"] = {
+            "type": "fanPressure",
+            "direction": "in" if o.kind == OpeningKind.inlet else "out",
+            "fanCurve": _fan_curve(o),
+            "p0": f"uniform {opening_p0(case, o):.8g}",
+            "value": "$internalField",
+        }
+    elif o.kind == OpeningKind.inlet:  # free vent: ambient total pressure
+        out["p_rgh"] = {"type": "prghTotalPressure", "p0": f"uniform {p0}",
+                        "value": "$internalField"}
+    else:  # plain outlet: ambient static pressure
+        out["p_rgh"] = {"type": "prghPressure", "p": f"uniform {p0}", "value": "$internalField"}
+    return out
+
+
+def _grille_sources(case: Case, depth: float) -> dict:
+    """explicitPorositySource per grille: Forchheimer f = K / depth, so that the layer
+    drops K rho u^2 / 2 (DarcyForchheimer: dp/L = f rho |u| u / 2)."""
+    out = {}
+    for o in case.openings:
+        if o.grille is None or o.grille.k() <= 0:
+            continue
+        f = o.grille.k() / depth
+        out[grille_zone(o)] = {
+            "type": "explicitPorositySource",
+            "explicitPorositySourceCoeffs": {
+                "selectionMode": "cellZone",
+                "cellZone": grille_zone(o),
+                "type": "DarcyForchheimer",
+                "d": "(0 0 0)",
+                "f": f"({f:.6g} {f:.6g} {f:.6g})",
+                "coordinateSystem": {"origin": "(0 0 0)", "e1": "(1 0 0)", "e2": "(0 1 0)"},
+            },
+        }
+    return out
 
 
 def write_initial_fields(case: Case, case_dir: Path) -> None:
@@ -255,20 +343,16 @@ def write_initial_fields(case: Case, case_dir: Path) -> None:
     air = case.fluid_region
     tamb = _tk(case.ambient_temperature)
     p0 = case.ambient_pressure
-    inlets = [o for o in case.openings if o.kind == OpeningKind.inlet]
-    outlets = [o for o in case.openings if o.kind == OpeningKind.outlet]
     iface = f"{air}_to_.*"
     k0, om0 = _turbulence_inlet(case)
+    per_opening = {o.name: _opening_bcs(case, o, k0, om0) for o in case.openings}
 
-    def bf(default: dict, inlet: dict | None, outlet: dict | None, interface: dict | None = None,
-           per_inlet=None) -> dict:
+    def bf(name: str, default: dict, interface: dict | None = None) -> dict:
         out: dict = {".*": default}
         if interface is not None:
             out[iface] = interface
-        for o in inlets:
-            out[o.name] = per_inlet(o) if per_inlet else inlet
-        for o in outlets:
-            out[o.name] = outlet
+        for o in case.openings:
+            out[o.name] = per_opening[o.name][name]
         return out
 
     wall_T = {"type": "zeroGradient"}
@@ -277,39 +361,23 @@ def write_initial_fields(case: Case, case_dir: Path) -> None:
         "value": "$internalField", "Tnbr": "T", "kappaMethod": "fluidThermo",
     }
     fields = {
-        "U": _vol("volVectorField", "[0 1 -1 0 0 0 0]", "uniform (0 0 0)", bf(
-            {"type": "noSlip"}, None,
-            {"type": "pressureInletOutletVelocity", "value": "uniform (0 0 0)"},
-            per_inlet=lambda o: {"type": "fixedValue", "value": _inlet_vector(case, o.name)})),
-        "p": _vol("volScalarField", "[1 -1 -2 0 0 0 0]", f"uniform {p0}", bf(
-            {"type": "calculated", "value": "$internalField"}, None,
-            {"type": "calculated", "value": "$internalField"},
-            per_inlet=lambda o: {"type": "calculated", "value": "$internalField"})),
-        "p_rgh": _vol("volScalarField", "[1 -1 -2 0 0 0 0]", f"uniform {p0}", bf(
-            {"type": "fixedFluxPressure", "value": "$internalField"},
-            {"type": "fixedFluxPressure", "value": "$internalField"},
-            {"type": "prghPressure", "p": f"uniform {p0}", "value": "$internalField"})),
-        "T": _vol("volScalarField", "[0 0 0 1 0 0 0]", f"uniform {tamb}", bf(
-            wall_T, None,
-            {"type": "inletOutlet", "inletValue": f"uniform {tamb}", "value": "$internalField"},
-            coupled_fluid,
-            per_inlet=lambda o: {"type": "fixedValue", "value": f"uniform {_tk(o.temperature if o.temperature is not None else case.ambient_temperature)}"})),
-        "k": _vol("volScalarField", "[0 2 -2 0 0 0 0]", f"uniform {k0:.6g}", bf(
-            {"type": "kqRWallFunction", "value": "$internalField"},
-            {"type": "fixedValue", "value": f"uniform {k0:.6g}"},
-            {"type": "inletOutlet", "inletValue": "$internalField", "value": "$internalField"})),
-        "omega": _vol("volScalarField", "[0 0 -1 0 0 0 0]", f"uniform {om0:.6g}", bf(
-            {"type": "omegaWallFunction", "value": "$internalField"},
-            {"type": "fixedValue", "value": f"uniform {om0:.6g}"},
-            {"type": "inletOutlet", "inletValue": "$internalField", "value": "$internalField"})),
-        "nut": _vol("volScalarField", "[0 2 -1 0 0 0 0]", "uniform 0", bf(
-            {"type": "nutkWallFunction", "value": "uniform 0"},
-            {"type": "calculated", "value": "uniform 0"},
-            {"type": "calculated", "value": "uniform 0"})),
+        "U": _vol("volVectorField", "[0 1 -1 0 0 0 0]", "uniform (0 0 0)",
+                  bf("U", {"type": "noSlip"})),
+        "p": _vol("volScalarField", "[1 -1 -2 0 0 0 0]", f"uniform {p0}",
+                  bf("p", {"type": "calculated", "value": "$internalField"})),
+        "p_rgh": _vol("volScalarField", "[1 -1 -2 0 0 0 0]", f"uniform {p0}",
+                      bf("p_rgh", {"type": "fixedFluxPressure", "value": "$internalField"})),
+        "T": _vol("volScalarField", "[0 0 0 1 0 0 0]", f"uniform {tamb}",
+                  bf("T", wall_T, coupled_fluid)),
+        "k": _vol("volScalarField", "[0 2 -2 0 0 0 0]", f"uniform {k0:.6g}",
+                  bf("k", {"type": "kqRWallFunction", "value": "$internalField"})),
+        "omega": _vol("volScalarField", "[0 0 -1 0 0 0 0]", f"uniform {om0:.6g}",
+                      bf("omega", {"type": "omegaWallFunction", "value": "$internalField"})),
+        "nut": _vol("volScalarField", "[0 2 -1 0 0 0 0]", "uniform 0",
+                    bf("nut", {"type": "nutkWallFunction", "value": "uniform 0"})),
         "alphat": _vol("volScalarField", "[1 -1 -1 0 0 0 0]", "uniform 0", bf(
-            {"type": "compressible::alphatWallFunction", "Prt": 0.85, "value": "uniform 0"},
-            {"type": "calculated", "value": "uniform 0"},
-            {"type": "calculated", "value": "uniform 0"})),
+            "alphat", {"type": "compressible::alphatWallFunction", "Prt": 0.85,
+                       "value": "uniform 0"})),
     }
     if case.solver.turbulence == "laminar":
         for f in ("k", "omega", "nut", "alphat"):

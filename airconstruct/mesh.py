@@ -11,6 +11,8 @@ Strategy (MVP, axis-aligned boxes only):
   3. topoSet: one cellZone per component (boxToCell) + cellZone "air" for the rest.
   4. splitMeshRegions -cellZonesOnly -overwrite: one region per zone. Interfaces are
      named "<a>_to_<b>" (mappedWall), as OpenFOAM does.
+  5. topoSet -region air: one cellZone "grille_<opening>" per grille, the porous layer
+     just inside the opening (its inner face is a grid plane, see plan_mesh).
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .case import Case, Face
+from .case import Case, Face, Opening
 from .foam.dictionary import write_foam_dict
 
 # precision level -> (base cells along the largest enclosure side, min cells per segment)
@@ -72,6 +74,28 @@ def _opening_bounds(case: Case) -> list[tuple[int, float, float]]:
     return out
 
 
+def grille_depth(case: Case, h: float) -> float:
+    """Thickness of the porous layer modelling a grille: two bulk cells, at most 10 %
+    of the enclosure along the opening's normal."""
+    return min(2.0 * h, 0.1 * min(case.enclosure.as_tuple()))
+
+
+def grille_box(case: Case, o: Opening, depth: float) -> tuple[list[float], list[float]]:
+    """(min, max) corners of the porous layer behind opening o."""
+    E = case.enclosure.as_tuple()
+    normal, at_max, (a, b) = FACE_AXES[o.face]
+    lo, hi = [0.0] * 3, [0.0] * 3
+    lo[normal], hi[normal] = (E[normal] - depth, E[normal]) if at_max else (0.0, depth)
+    for k, ax in enumerate((a, b)):
+        lo[ax] = o.center[k] - o.size[k] / 2
+        hi[ax] = o.center[k] + o.size[k] / 2
+    return lo, hi
+
+
+def grille_zone(o: Opening) -> str:
+    return f"grille_{o.name}"
+
+
 def _axis_grid(L: float, points: set[float], h: float, min_cells: int) -> AxisGrid:
     pts = sorted(p for p in points | {0.0, L} if -TOL <= p <= L + TOL)
     bp: list[float] = []
@@ -98,6 +122,12 @@ def plan_mesh(case: Case) -> MeshPlan:
             points[i].update((c.box.min[i], c.box.max[i]))
     for ax, lo, hi in _opening_bounds(case):
         points[ax].update((lo, hi))
+    depth = grille_depth(case, h)
+    for o in case.openings:
+        if o.grille is not None:  # the porous layer's inner face is a grid plane
+            lo, hi = grille_box(case, o, depth)
+            normal = FACE_AXES[o.face][0]
+            points[normal].update((lo[normal], hi[normal]))
     axes = tuple(_axis_grid(E[i], points[i], h, min_cells) for i in range(3))
     div = tuple(a.n for a in axes)
     n = div[0] * div[1] * div[2]
@@ -179,6 +209,20 @@ def write_mesh_dicts(case: Case, case_dir: Path, plan: MeshPlan | None = None) -
     for name in [air] + case.solid_regions:
         zone_actions.append(_action(name, "cellZoneSet", "new", "setToCellZone", {"set": name}))
     write_foam_dict(sysd / "topoSetDict.zones", {"actions": _list(zone_actions)}, obj="topoSetDict")
+
+    # porous layers of the grilles: cellZones of the air region, made after the split
+    depth = grille_depth(case, plan.cell_size)
+    grille_actions = []
+    for o in case.openings:
+        if o.grille is None:
+            continue
+        lo, hi = grille_box(case, o, depth)
+        z = grille_zone(o)
+        grille_actions.append(_action(z, "cellSet", "new", "boxToCell", {"box": _box(lo, hi)}))
+        grille_actions.append(_action(z, "cellZoneSet", "new", "setToCellZone", {"set": z}))
+    if grille_actions:
+        write_foam_dict(sysd / "topoSetDict.grilles", {"actions": _list(grille_actions)},
+                        obj="topoSetDict")
     return plan
 
 
@@ -207,4 +251,6 @@ def mesh_commands(case: Case) -> list[list[str]]:
         ["topoSet", "-dict", "system/topoSetDict.zones"],
         ["splitMeshRegions", "-cellZonesOnly", "-overwrite"],
     ]
+    if any(o.grille is not None for o in case.openings):
+        cmds.append(["topoSet", "-region", case.fluid_region, "-dict", "system/topoSetDict.grilles"])
     return cmds

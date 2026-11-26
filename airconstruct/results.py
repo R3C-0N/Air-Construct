@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from .case import Case, OpeningKind
+from .foam.writer import opening_p0
 from .materials import GASES
 
 KELVIN = 273.15
@@ -49,6 +50,21 @@ class ComponentResult:
     power_w: float
     t_max_c: float
     t_mean_c: float
+
+
+@dataclass
+class FanResult:
+    """Operating point of a fan: the flow it delivers and the pressure rise it gives.
+
+    For a fan with a curve, pressure_rise_pa is the curve read at the simulated flow
+    rate (the solver keeps the fan on its curve). For a fan with an imposed flow rate,
+    it is the static pressure the system needs: mean p_rgh on the fan minus ambient
+    for an intake fan, ambient minus it for an exhaust fan."""
+
+    name: str
+    flow_rate_m3_s: float
+    pressure_rise_pa: float
+    direction: str  # "in" or "out"
 
 
 @dataclass
@@ -69,6 +85,7 @@ class Summary:
     energy_balance_error: float = float("nan")  # (heat_to_air - power) / power
     pressure_field: str = "p_rgh"
     warnings: list[str] = field(default_factory=list)
+    fans: list[FanResult] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -371,7 +388,34 @@ def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
             f"energy balance off by {err:+.0%}: air carries {q_air:.2f} W for {power:.2f} W "
             "dissipated (not converged yet, or heat leaves through the walls)")
 
+    fans = []
+    for o in case.openings:
+        if o.fan is None:
+            continue
+        fr = _flux_stats(case_dir, t, [o.name])
+        if fr is not None:
+            rho = case.ambient_pressure * gas.mol_weight * 1e-3 / (R_GAS * fr[1])
+            q = fr[0] / rho
+        else:  # no face fluxes written: rebuild the flow from the boundary velocity
+            m = _mass_flow(patches, [o.name], gas.mol_weight)
+            t_f = _patch_stats(patches, [o.name], "T")
+            if m is not None and t_f is not None:
+                q = m * R_GAS * t_f / (case.ambient_pressure * gas.mol_weight * 1e-3)
+            else:
+                q = float("nan")
+        if o.fan.curve is not None:
+            dp = o.fan.pressure_at(q) if np.isfinite(q) else float("nan")
+        else:
+            p_fan = _patch_stats(patches, [o.name], pfield)
+            p_amb = opening_p0(case, o) if pfield == "p_rgh" else case.ambient_pressure
+            if p_fan is None:
+                dp = float("nan")
+            else:
+                dp = p_fan - p_amb if o.kind == OpeningKind.inlet else p_amb - p_fan
+        fans.append(FanResult(o.name, q, dp, "in" if o.kind == OpeningKind.inlet else "out"))
+
     return Summary(
+        fans=fans,
         components=comps, air_t_max_c=air_t_max, air_v_max=v_max, pressure_drop_pa=dp,
         outlet_t_mean_c=t_out_c, time=t, inlet_t_mean_c=t_in_c, air_t_mean_c=air_t_mean,
         mass_flow_kg_s=mdot, mass_imbalance=imbalance, heat_to_air_w=q_air, total_power_w=power,
