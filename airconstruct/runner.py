@@ -274,15 +274,24 @@ def run_case(
     def step(argv: list[str], logname: str, on_line_extra: Callable[[str], None] | None = None,
              mode: str = "w") -> bool:
         log(f"$ {' '.join(argv)}")
+        ended = False
         with open(case_dir / f"log.{logname}", mode) as fh:
 
             def on_line(line: str) -> None:
+                nonlocal ended
+                ended = ended or line.strip() == "End"
                 fh.write(line + "\n")
                 log(line)
                 if on_line_extra:
                     on_line_extra(line)
 
             code = backend.run(argv, case_dir, on_line)
+        if code != 0 and ended:
+            # The solver finished ("End") and crashed while exiting: the solver output is
+            # read through a buffered pipe, so a write_now signal can arrive after the
+            # solver already reached endTime and is tearing down. Its results are written.
+            log(f"(ignoring exit {code} after a clean End)")
+            return True
         if code != 0:
             tail = "\n".join(log_lines[-30:])
             errors.append(f"{' '.join(argv)} failed (exit {code})\n{tail}")
