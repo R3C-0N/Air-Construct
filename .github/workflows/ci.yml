@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev,results]"
+      - run: ruff check .
+      - run: pytest -q
+
+  openfoam:
+    name: OpenFOAM simulation tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install OpenFOAM (openfoam.com)
+        run: |
+          curl -s https://dl.openfoam.com/add-debian-repo.sh | sudo bash
+          sudo apt-get install -y openfoam2406-default
+      - run: pip install -e ".[dev,results]"
+      - name: Run OpenFOAM tests
+        shell: bash
+        run: |
+          source /usr/lib/openfoam/openfoam2406/etc/bashrc || true
+          pytest -q -m openfoam
+      - name: Upload simulation outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-outputs
+          path: runs/
+          if-no-files-found: ignore
