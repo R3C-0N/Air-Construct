@@ -76,6 +76,9 @@ RUN_SCRIPT = (
 # $1 pid file.
 STOP_SCRIPT = '[ -f "$1" ] && kill -TERM "$(cat "$1")" 2>/dev/null; rm -f "$1"'
 
+# $1 pid file. SIGUSR1 = write the current state and stop (stopAtWriteNowSignal=10).
+WRITE_NOW_SCRIPT = '[ -f "$1" ] && kill -USR1 "$(cat "$1")" 2>/dev/null'
+
 
 # ---------------------------------------------------------------- path translation
 
@@ -426,6 +429,16 @@ class WslBackend(Backend):
         if current is not None:
             distro, pidfile = current
             self._call(["sh", "-c", STOP_SCRIPT, "airconstruct-stop", pidfile],
+                       distro=distro, check=False)
+
+
+    def write_now(self) -> None:
+        """Ask the running solver to write its current state and exit cleanly."""
+        with self._lock:
+            current = self._current_pidfile
+        if current is not None:
+            distro, pidfile = current
+            self._call(["sh", "-c", WRITE_NOW_SCRIPT, "airconstruct-write-now", pidfile],
                        distro=distro, check=False)
 
 

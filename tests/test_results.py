@@ -14,7 +14,8 @@ from foam_fixture import write_case
 from airconstruct import results
 from airconstruct.case import Case
 
-EXAMPLE = Path(__file__).parent.parent / "examples" / "electronics_box.yaml"
+# frozen copy of the first example: the synthetic fixture mesh is built for this geometry
+EXAMPLE = Path(__file__).parent / "data" / "results_box.yaml"
 # cell size 5 x 5 x 2 mm: every component and opening of the example falls on cell faces
 DIVISIONS = (40, 24, 30)
 L = 0.2  # enclosure length along x

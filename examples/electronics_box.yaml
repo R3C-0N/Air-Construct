@@ -1,4 +1,5 @@
-# Fan-cooled electronics box: 3 heat sources on a board, air in on the left, out on the right.
+# Fan-cooled electronics box: a CPU with a heatsink, a regulator and a RAM chip on a board.
+# Air comes in on the left (xmin) and leaves on the right (xmax).
 name: electronics_box
 enclosure: {x: 0.20, y: 0.12, z: 0.06}
 ambient_temperature: 25.0
@@ -8,15 +9,18 @@ components:
     box: {origin: {x: 0.01, y: 0.01, z: 0.005}, size: {x: 0.18, y: 0.10, z: 0.002}}
   - name: cpu
     material: silicon
-    power: 15.0
-    box: {origin: {x: 0.06, y: 0.04, z: 0.007}, size: {x: 0.03, y: 0.03, z: 0.006}}
+    power: 8.0
+    box: {origin: {x: 0.06, y: 0.04, z: 0.007}, size: {x: 0.03, y: 0.03, z: 0.003}}
+  - name: heatsink
+    material: aluminium
+    box: {origin: {x: 0.055, y: 0.035, z: 0.010}, size: {x: 0.04, y: 0.04, z: 0.02}}
   - name: regulator
     material: aluminium
-    power: 5.0
+    power: 3.0
     box: {origin: {x: 0.13, y: 0.02, z: 0.007}, size: {x: 0.02, y: 0.02, z: 0.01}}
   - name: ram
     material: silicon
-    power: 3.0
+    power: 2.0
     box: {origin: {x: 0.12, y: 0.07, z: 0.007}, size: {x: 0.04, y: 0.015, z: 0.004}}
 openings:
   - name: inlet
@@ -31,4 +35,4 @@ openings:
     center: [0.06, 0.03]
     size: [0.08, 0.04]
 precision: {level: 2}
-solver: {iterations: 800, cores: 1}
+solver: {cores: 1}

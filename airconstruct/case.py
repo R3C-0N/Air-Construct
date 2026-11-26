@@ -112,7 +112,7 @@ class Precision(BaseModel):
 
 
 class Solver(BaseModel):
-    iterations: int = 1000
+    iterations: int = 20000  # cap on total solver iterations
     cores: int = 1
     turbulence: str = "kOmegaSST"  # or "laminar"
     gravity: bool = True
