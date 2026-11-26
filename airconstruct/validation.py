@@ -4,9 +4,9 @@ Owned by: workstream "validation".
 
 Two kinds of checks:
 
-- Conservation checks, valid for any case with adiabatic enclosure walls:
-  the outlet mass flow equals the inlet one, and the heat carried away by the air,
-  m_dot * cp * (T_out - T_in), equals the dissipated power. These are exact at
+- Conservation checks, valid for any case: the outlet mass flow equals the inlet one,
+  and the heat carried away by the air, m_dot * cp * (T_out - T_in), plus the heat
+  lost through the enclosure walls equals the dissipated power. These are exact at
   steady state, so their tolerance is tight.
 - Physics checks for the "heated blocks in a channel" case
   (validation/heated_blocks/): mirror-symmetric blocks have the same temperature,
@@ -103,10 +103,14 @@ def conservation_checks(case: Case, summary, mass_tol: float = 0.005,
         m_in = summary.mass_flow_kg_s
     power = summary.total_power_w
     if power > 0:
-        checks.append(Check("energy balance: heat to air / power", summary.heat_to_air_w / power,
-                            1.0, energy_tol, "", f"{power:.2f} W dissipated"))
+        walls = getattr(summary, "heat_through_walls_w", 0.0)
+        name = "energy balance: (heat to air + walls) / power" if walls else \
+            "energy balance: heat to air / power"
+        checks.append(Check(name, (summary.heat_to_air_w + walls) / power,
+                            1.0, energy_tol, "", f"{power:.2f} W dissipated"
+                            + (f", {walls:.2f} W through the walls" if walls else "")))
         gas = GASES[case.fluid]
-        rise = power / (m_in * gas.cp)
+        rise = (power - walls) / (m_in * gas.cp)
         t_in = summary.inlet_t_mean_c
         checks.append(Check("outlet temperature rise P/(m_dot cp)",
                             summary.outlet_t_mean_c - t_in, rise, energy_tol * rise, "K"))

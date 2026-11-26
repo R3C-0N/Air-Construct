@@ -110,6 +110,16 @@ opening adds a porous layer two cells deep just inside it (cellZone `grille_<nam
 Darcy-Forchheimer) that drops K rho u^2 / 2; K comes from the open-area ratio (Idelchik,
 thin perforated plate). See `examples/fan_box.yaml`.
 
+## Enclosure walls
+
+Walls are adiabatic by default. `walls: {mode: exchange, material: steel, thickness: 0.001,
+h_external: 5, emissivity: 0.9}` makes heat cross them (1D conduction through the wall,
+then convection and radiation to `t_external`, default ambient), with OpenFOAM's
+`externalWallHeatFluxTemperature` on both the air and the solid side. `faces: {zmin:
+{mode: adiabatic}}` overrides single faces (the walls are then split into
+`walls_<face>` patches). `Summary.heat_through_walls_w` gives the heat they carry away,
+and the energy balance includes it.
+
 ## Conventions
 
 Units are SI, temperatures in °C in the case file. z is up. The enclosure spans
