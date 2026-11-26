@@ -113,9 +113,14 @@ def test_pressure_drop_from_p_rgh(summary):
 
 
 def test_energy_balance(summary):
-    rho = 101325.0 * 28.96e-3 / (results.R_GAS * (T_IN + DT))
-    mdot = rho * 1.0 * 0.08 * 0.04  # outlet is 80 x 40 mm, U normal = 1 m/s
+    # openings are 80 x 40 mm, U normal = 1 m/s; the inlet flow drives the heat balance
+    rho_in = 101335.0 * 28.96e-3 / (results.R_GAS * T_IN)
+    rho_out = 101325.0 * 28.96e-3 / (results.R_GAS * (T_IN + DT))
+    mdot = rho_in * 1.0 * 0.08 * 0.04
     assert summary.mass_flow_kg_s == pytest.approx(mdot, rel=1e-6)
+    # the synthetic U is uniform, so the warmer, lighter outlet air carries less mass
+    assert summary.mass_imbalance == pytest.approx(rho_out / rho_in - 1, rel=1e-6)
+    assert any("mass balance" in w for w in summary.warnings)
     assert summary.heat_to_air_w == pytest.approx(mdot * 1005.0 * DT, rel=1e-6)
     assert summary.total_power_w == 23.0
     assert summary.energy_balance_error == pytest.approx(mdot * 1005.0 * DT / 23.0 - 1, rel=1e-6)
