@@ -12,12 +12,12 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
-    QVBoxLayout,
     QWidget,
 )
-from superqt import QCollapsible
 
 from ...alerts import ERROR
+from ...theme import COLORS, set_prop
+from ...widgets.card import Card
 from ..base import StepTab
 
 
@@ -40,12 +40,12 @@ class SimulationTab(StepTab):
         self.residual_label = QLabel("")
         self.blocked_label = QLabel("")
         self.blocked_label.setWordWrap(True)
-        self.blocked_label.setStyleSheet("color: #B91C1C;")
+        self.blocked_label.setStyleSheet(f"color: {COLORS['error_text']};")
+        set_prop(self.run_button, kind="primary")
+        set_prop(self.residual_label, role="muted")
 
-        self._left = QWidget()
-        lay = QVBoxLayout(self._left)
-        lay.setContentsMargins(4, 4, 4, 4)
-        lay.addWidget(QLabel("<b>Simulation</b>"))
+        self._left = Card("Simulation")
+        lay = self._left.body
         buttons = QHBoxLayout()
         buttons.addWidget(self.run_button)
         buttons.addWidget(self.stop_button)
@@ -60,14 +60,8 @@ class SimulationTab(StepTab):
         self.log.setMaximumBlockCount(5000)
         self.log.setPlaceholderText("Le journal du solveur s’affiche ici.")
         self.log.setMinimumHeight(300)
-        self.log_box = QCollapsible("Journal")
-        self.log_box.addWidget(self.log)
-        self.log_box.expand(animate=False)
-        self._right = QWidget()
-        rl = QVBoxLayout(self._right)
-        rl.setContentsMargins(4, 4, 4, 4)
-        rl.addWidget(self.log_box)
-        rl.addStretch(1)
+        self._right = Card("Journal")
+        self._right.body.addWidget(self.log, 1)
 
         r.started.connect(self._on_started)
         r.log.connect(self.log.appendPlainText)

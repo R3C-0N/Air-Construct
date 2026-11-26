@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from .case import Case, OpeningKind
+from .foam.writer import opening_p0
 from .materials import GASES
 
 KELVIN = 273.15
@@ -154,6 +155,31 @@ class EnergyBalance:
 
 
 @dataclass
+class FanResult:
+    """Operating point of a fan: the flow it delivers and the pressure rise it gives.
+
+    For a fan with a curve, pressure_rise_pa is the curve read at the simulated flow
+    rate (the solver keeps the fan on its curve). For a fan with an imposed flow rate,
+    it is the static pressure the system needs: mean p_rgh on the fan minus ambient
+    for an intake fan, ambient minus it for an exhaust fan."""
+
+    name: str
+    flow_rate_m3_s: float
+    pressure_rise_pa: float
+    direction: str  # "in" or "out"
+
+
+@dataclass
+class ProbeResult:
+    """Last sample of a probe (see probes.read_probes for the whole history)."""
+
+    name: str
+    region: str
+    t_c: float
+    speed: float  # [m/s], nan in a solid
+
+
+@dataclass
 class Summary:
     components: list[ComponentResult]
     air_t_max_c: float
@@ -168,12 +194,15 @@ class Summary:
     mass_imbalance: float = float("nan")  # (outlet - inlet) / inlet mass flow
     heat_to_air_w: float = float("nan")  # mass_flow * cp * (T_out - T_in)
     total_power_w: float = 0.0
-    energy_balance_error: float = float("nan")  # (heat_to_air - power) / power
+    energy_balance_error: float = float("nan")  # (heat_to_air + walls - power) / power
     pressure_field: str = "p_rgh"
     warnings: list[str] = field(default_factory=list)
+    fans: list[FanResult] = field(default_factory=list)
     pressure_drop_total_pa: float = float("nan")  # inlet - outlet total pressure
     openings: list[OpeningResult] = field(default_factory=list)
     energy: EnergyBalance | None = None
+    heat_through_walls_w: float = 0.0  # leaving through the enclosure walls (0 if adiabatic)
+    probes: list[ProbeResult] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -410,6 +439,34 @@ def _mass_flow(patches: dict, names: list[str], molw: float) -> float | None:
     return total if found else None
 
 
+SIGMA = 5.670374419e-8  # Stefan-Boltzmann [W/m2/K4]
+
+
+def wall_heat_loss(case: Case, blocks: dict) -> float:
+    """Heat [W] leaving through the enclosure walls, from the inner wall temperature of
+    every region (air and solids touching the walls). Same law as OpenFOAM's
+    externalWallHeatFluxTemperature in coefficient mode:
+    q = (T_w - T_a) / (1 / (h + h_rad) + t / kappa), h_rad = eps sigma (T_w^2 + T_a^2)(T_w + T_a)."""
+    from .case import WallMode
+    from .materials import SOLIDS
+
+    total = 0.0
+    for name, faces in case.wall_patches().items():
+        w = case.walls.for_face(faces[0])
+        if w.mode != WallMode.exchange:
+            continue
+        ta = (w.t_external if w.t_external is not None else case.ambient_temperature) + KELVIN
+        r_wall = w.thickness / SOLIDS[w.material].kappa
+        for b in blocks.values():
+            poly = b["patches"].get(name)
+            if poly is None or "T" not in poly.cell_data:
+                continue
+            tw = np.asarray(poly.cell_data["T"], dtype=float)
+            h = w.h_external + w.emissivity * SIGMA * (tw**2 + ta**2) * (tw + ta)
+            total += float(np.sum(_areas(poly) * (tw - ta) / (1.0 / h + r_wall)))
+    return total
+
+
 def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
     t, blocks = _read_blocks(case_dir, time)
     warnings: list[str] = []
@@ -477,12 +534,38 @@ def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
     mdot = mdot if mdot is not None else float("nan")
     q_air = mdot * gas.cp * (t_out_c - t_in_c)
     power = float(sum(c.power for c in case.components))
-    err = (q_air - power) / power if power > 0 else float("nan")
+    q_walls = wall_heat_loss(case, blocks)
+    err = (q_air + q_walls - power) / power if power > 0 else float("nan")
     if power > 0 and np.isfinite(err) and abs(err) > 0.2:
         warnings.append(
-            f"energy balance off by {err:+.0%}: air carries {q_air:.2f} W for {power:.2f} W "
-            "dissipated (not converged yet, or heat leaves through the walls)")
+            f"energy balance off by {err:+.0%}: air carries {q_air:.2f} W and the walls "
+            f"{q_walls:.2f} W for {power:.2f} W dissipated (not converged yet?)")
 
+    fans = []
+    for o in case.openings:
+        if o.fan is None:
+            continue
+        fr = _flux_stats(case_dir, t, [o.name])
+        if fr is not None:
+            rho = case.ambient_pressure * gas.mol_weight * 1e-3 / (R_GAS * fr[1])
+            q = fr[0] / rho
+        else:  # no face fluxes written: rebuild the flow from the boundary velocity
+            m = _mass_flow(patches, [o.name], gas.mol_weight)
+            t_f = _patch_stats(patches, [o.name], "T")
+            if m is not None and t_f is not None:
+                q = m * R_GAS * t_f / (case.ambient_pressure * gas.mol_weight * 1e-3)
+            else:
+                q = float("nan")
+        if o.fan.curve is not None:
+            dp = o.fan.pressure_at(q) if np.isfinite(q) else float("nan")
+        else:
+            p_fan = _patch_stats(patches, [o.name], pfield)
+            p_amb = opening_p0(case, o) if pfield == "p_rgh" else case.ambient_pressure
+            if p_fan is None:
+                dp = float("nan")
+            else:
+                dp = p_fan - p_amb if o.kind == OpeningKind.inlet else p_amb - p_fan
+        fans.append(FanResult(o.name, q, dp, "in" if o.kind == OpeningKind.inlet else "out"))
     t_ref = (t_in_c if np.isfinite(t_in_c) else case.ambient_temperature) + KELVIN
     openings = _openings(case, case_dir, t, patches, pfield, t_ref)
     dp_total = float("nan")
@@ -507,7 +590,22 @@ def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
                     f"component {part.name!r}: {part.out_w:.2f} W leave it for {part.power_w:.2f} W "
                     "dissipated (its temperature has not converged)")
 
+    if energy is not None and any(
+            case.walls.for_face(f[0]).mode == "exchange" for f in case.wall_patches().values()):
+        # the solver's own wall fluxes, consistent with the per-part balance
+        q_walls = energy.air_to_walls_w + sum(p.to_walls_w for p in energy.parts)
+        err = (q_air + q_walls - power) / power if power > 0 else float("nan")
+
+    from .probes import read_probes
+
+    probes = []
+    for name, ser in read_probes(case, case_dir).items():
+        if not ser.t_c:
+            warnings.append(f"probe {name!r}: no sample written (outside the {ser.region} mesh?)")
+        probes.append(ProbeResult(name, ser.region, *ser.last()))
+
     return Summary(
+        probes=probes, fans=fans, heat_through_walls_w=q_walls,
         components=comps, air_t_max_c=air_t_max, air_v_max=v_max, pressure_drop_pa=dp,
         outlet_t_mean_c=t_out_c, time=t, inlet_t_mean_c=t_in_c, air_t_mean_c=air_t_mean,
         mass_flow_kg_s=mdot, mass_imbalance=imbalance, heat_to_air_w=q_air, total_power_w=power,

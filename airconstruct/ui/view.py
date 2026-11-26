@@ -21,7 +21,7 @@ from ..case import Case, Face, OpeningKind
 KELVIN = 273.15
 OPENING_THICKNESS = 0.002  # fraction of the enclosure diagonal, only for display
 
-FIELDS = {"T": "Temperature (°C)", "U": "Velocity (m/s)"}
+FIELDS = {"T": "Température (°C)", "U": "Vitesse (m/s)"}
 
 
 @dataclass
@@ -155,6 +155,7 @@ def three_d_enabled() -> bool:
     return os.environ.get("AIRCONSTRUCT_NO_3D", "") not in ("1", "true", "yes")
 
 
+BACKGROUND, BACKGROUND_TOP = "#E7EAEF", "#FFFFFF"  # theme.COLORS background gradient
 CAMERAS = {"top": "Dessus", "front": "Face", "side": "Côté", "iso": "Iso"}
 
 
@@ -177,7 +178,7 @@ class SceneView(QWidget):
                 from pyvistaqt import QtInteractor
 
                 self.plotter = QtInteractor(self)
-                self.plotter.set_background("white")
+                self.plotter.set_background(BACKGROUND, top=BACKGROUND_TOP)
                 layout.addWidget(self.plotter.interactor)
                 self._enable_picking()
             except Exception as exc:  # noqa: BLE001 - no OpenGL, missing package...

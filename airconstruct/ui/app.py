@@ -22,8 +22,8 @@ from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSplitter,
     QStackedWidget,
-    QTabBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -45,9 +44,13 @@ from .run import RunController
 from .selection import Selection
 from .statusbar import StatusBar
 from .tabs import TAB_CLASSES, StepTab
+from .theme import COLORS, apply_theme, ensure_theme, set_prop
 from .units import Units
 from .view import geometry_items
 from .viewport import Viewport
+from .widgets.card import Card
+from .widgets.step_nav import StepNav
+from .widgets.toggle import ToggleSwitch
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "electronics_box.yaml"
 MAX_RECENT = 8
@@ -106,12 +109,6 @@ def _default_write_report(case: Case, case_dir: Path, out_dir: Path, summary=Non
     return write_report(case, case_dir, out_dir, summary=summary)
 
 
-BADGE_STYLE = {
-    "error": "background:#E0445A; color:white; border-radius:8px; font-size:11px; font-weight:600;",
-    "warning": "background:#F59E0B; color:white; border-radius:8px; font-size:11px; font-weight:600;",
-}
-
-
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -128,6 +125,7 @@ class MainWindow(QMainWindow):
         settings: QSettings | None = None,
     ) -> None:
         super().__init__()
+        ensure_theme()
         self.settings = settings or QSettings("AirConstruct", "AirConstruct")
         self.work_dir = Path(
             work_dir or self.settings.value("work_dir", str(Path.home() / "AirConstruct" / "runs"))
@@ -226,7 +224,7 @@ class MainWindow(QMainWindow):
         """A fixed-glyph button that follows an action (its tooltip names the step)."""
         b = QToolButton()
         b.setText(glyph)
-        b.setStyleSheet("font-size: 15px;")
+        b.setStyleSheet("font-size: 17px; min-width: 32px; min-height: 36px;")
 
         def sync() -> None:
             try:
@@ -240,61 +238,91 @@ class MainWindow(QMainWindow):
         sync()
         return b
 
+    @staticmethod
+    def _bar_card() -> tuple[QFrame, QHBoxLayout]:
+        card = QFrame()
+        card.setObjectName("card")
+        lay = QHBoxLayout(card)
+        lay.setContentsMargins(4, 4, 8, 4)
+        lay.setSpacing(4)
+        return card, lay
+
     def _build_ui(self) -> None:
-        top = QWidget()
-        top.setObjectName("topBar")
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(6, 4, 6, 4)
+        # top bar: three floating cards (file | steps | undo, expert), as in the mockup
+        file_card, fl = self._bar_card()
         self.file_button = QToolButton()
         self.file_button.setText("Fichier ▾")
+        self.file_button.setStyleSheet("font-size: 14px; min-height: 36px; padding: 0 12px;")
         self.file_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.file_button.setMenu(self.file_menu)
-        tl.addWidget(self.file_button)
+        fl.addWidget(self.file_button)
+        sep = QFrame()
+        sep.setFixedSize(1, 24)
+        sep.setStyleSheet(f"background: {COLORS['input_border']};")
+        fl.addWidget(sep)
         self.name_label = QLabel()
-        self.name_label.setStyleSheet("font-weight: 600;")
-        tl.addWidget(self.name_label)
+        set_prop(self.name_label, role="title")
+        self.name_label.setContentsMargins(8, 0, 4, 0)
+        fl.addWidget(self.name_label)
         self.state_label = QLabel()
-        self.state_label.setStyleSheet("color: #6B7280;")
-        tl.addWidget(self.state_label)
-        tl.addSpacing(24)
-        self.tab_bar = QTabBar()
-        self.tab_bar.setExpanding(False)
-        self.tab_bar.setDrawBase(False)
+        set_prop(self.state_label, role="pill")
+        fl.addWidget(self.state_label)
+
+        self.tab_bar = StepNav()
         self.tab_bar.currentChanged.connect(self._on_tab_bar_changed)
-        tl.addWidget(self.tab_bar)
-        tl.addStretch(1)
+
+        tools_card, tl = self._bar_card()
         self.undo_button = self._action_button(self.undo_action, "↶")
         self.redo_button = self._action_button(self.redo_action, "↷")
         tl.addWidget(self.undo_button)
         tl.addWidget(self.redo_button)
-        self.expert_check = QCheckBox("Mode expert")
+        self.expert_check = ToggleSwitch("Mode expert")
         self.expert_check.setChecked(self.expert.on)
         self.expert_check.toggled.connect(self.expert.set)
         self.expert.changed.connect(self.expert_check.setChecked)
+        tl.addSpacing(8)
         tl.addWidget(self.expert_check)
 
+        top = QHBoxLayout()
+        top.setSpacing(12)
+        top.addWidget(file_card)
+        top.addStretch(1)
+        top.addWidget(self.tab_bar)
+        top.addStretch(1)
+        top.addWidget(tools_card)
+
+        # body: tab panels (cards) on each side of the shared viewport
         self.left_stack = QStackedWidget()
-        self.left_stack.setMinimumWidth(240)
+        self.left_stack.setMinimumWidth(260)
         self.right_stack = QStackedWidget()
-        self.right_stack.setMinimumWidth(280)
+        self.right_stack.setMinimumWidth(300)
         self.body = QSplitter(Qt.Orientation.Horizontal)
+        self.body.setHandleWidth(12)
+        self.body.setChildrenCollapsible(False)
         self.body.addWidget(self.left_stack)
         self.body.addWidget(self.viewport)
         self.body.addWidget(self.right_stack)
         self.body.setStretchFactor(1, 1)
-        self.body.setSizes([300, 760, 380])
+        self.body.setSizes([280, 800, 340])
+
+        # bottom: camera presets on the left, status card on the right
+        self.status = StatusBar(self.alerts, self.units, self._on_alert_clicked,
+                                self.all_shortcut_actions)
+        bottom = QHBoxLayout()
+        bottom.setSpacing(12)
+        bottom.addWidget(self.viewport.camera_card)
+        bottom.addStretch(1)
+        bottom.addWidget(self.status)
 
         central = QWidget()
+        central.setObjectName("shell")
         cl = QVBoxLayout(central)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(0)
-        cl.addWidget(top)
+        cl.setContentsMargins(16, 16, 16, 16)
+        cl.setSpacing(12)
+        cl.addLayout(top)
         cl.addWidget(self.body, 1)
+        cl.addLayout(bottom)
         self.setCentralWidget(central)
-
-        self.status = StatusBar(self.alerts, self.units, self._on_alert_clicked,
-                                self.all_shortcut_actions, self)
-        self.setStatusBar(self.status)
 
     # ------------------------------------------------------------------ tabs
     def add_tab(self, tab: StepTab) -> None:
@@ -303,15 +331,14 @@ class MainWindow(QMainWindow):
         tab._panels = {}
         for side, stack, w in (("left", self.left_stack, tab.left_panel()),
                                ("right", self.right_stack, tab.right_panel())):
+            if w is not None and not isinstance(w, Card):
+                card = Card()  # every side panel sits on a card
+                card.body.addWidget(w)
+                w = card
             if w is not None:
                 stack.addWidget(w)
             tab._panels[side] = w
-        badge = QLabel()  # always there (keeps the tab width), empty when no alert
-        badge.setFixedSize(20, 16)
-        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tab._badge = badge
-        i = self.tab_bar.addTab(tab.title)
-        self.tab_bar.setTabButton(i, QTabBar.ButtonPosition.RightSide, badge)
+        self.tab_bar.addTab(tab.title)
         for a in tab.actions():
             a.setEnabled(False)
             self.addAction(a)
@@ -352,18 +379,15 @@ class MainWindow(QMainWindow):
         self.refresh_scene()
 
     def _update_badges(self) -> None:
-        for key, tab in self.tabs.items():
+        for i, key in enumerate(self.tab_order):
             alerts = self.alerts.for_tab(key)
-            badge: QLabel = tab._badge
-            if not alerts:
-                badge.setText("")
-                badge.setStyleSheet("")
-                badge.setToolTip("")
-                continue
             level = "error" if any(a.level == "error" for a in alerts) else "warning"
-            badge.setText(str(len(alerts)))
-            badge.setStyleSheet(BADGE_STYLE[level])
-            badge.setToolTip("\n".join(a.message for a in alerts))
+            self.tab_bar.buttons[i].set_badge(len(alerts), level,
+                                              "\n".join(a.message for a in alerts))
+
+    def tab_badge(self, key: str) -> str:
+        """Text of a step's alert badge ('' when none)."""
+        return self.tab_bar.buttons[self.tab_order.index(key)].badge.text()
 
     def all_shortcut_actions(self) -> list[QAction]:
         out = list(self.global_actions)
@@ -414,6 +438,8 @@ class MainWindow(QMainWindow):
         else:
             state = "enregistré"
         self.state_label.setText(state)
+        set_prop(self.state_label, tone="warning" if p.dirty else
+                 "success" if p.path is not None else "")
         self.setWindowTitle(f"Air-Construct · {name}{' •' if p.dirty else ''}")
 
     # ------------------------------------------------------------------ run
@@ -539,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     app = QApplication.instance() or QApplication(argv)
     app.setApplicationName("Air-Construct")
+    apply_theme(app)
     case_path = Path(argv[1]) if len(argv) > 1 else None
     win = MainWindow()
     if case_path is not None:

@@ -1,5 +1,5 @@
-"""Bottom bar: alert count (click to go to the object at fault), messages, units,
-keyboard shortcuts.
+"""Status card (bottom right): messages, alert count (click to go to the object at
+fault), units, keyboard shortcuts.
 
 Owned by: workstream "ui" (shared core, see docs/ui-architecture.md).
 """
@@ -8,12 +8,15 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
     QMenu,
-    QStatusBar,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -22,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from .alerts import ERROR, WARNING, Alert, AlertCenter
+from .theme import COLORS, set_prop
 from .units import LENGTHS, TEMPERATURES, Units
 
 LEVEL_ICON = {ERROR: "✖", WARNING: "▲", "info": "ℹ"}
@@ -33,11 +37,32 @@ def alerts_text(n: int) -> str:
     return f"{n} alerte" + ("s" if n > 1 else "")
 
 
-class StatusBar(QStatusBar):
+def _separator() -> QFrame:
+    sep = QFrame()
+    sep.setFixedSize(1, 18)
+    sep.setStyleSheet(f"background: {COLORS['input_border']};")
+    return sep
+
+
+class StatusBar(QFrame):
     def __init__(self, alerts: AlertCenter, units: Units,
                  on_alert: Callable[[Alert], None],
                  shortcuts: Callable[[], list[QAction]], parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("card")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 2, 8, 2)
+        lay.setSpacing(8)
+        self.message_label = QLabel()
+        set_prop(self.message_label, role="muted")
+        self.message_label.setVisible(False)
+        self._message_timer = QTimer(self)
+        self._message_timer.setSingleShot(True)
+        self._message_timer.timeout.connect(self.clearMessage)
+        self.message_sep = _separator()
+        self.message_sep.setVisible(False)
+        lay.addWidget(self.message_label)
+        lay.addWidget(self.message_sep)
         self.alert_center = alerts
         self.units = units
         self._on_alert = on_alert
@@ -47,7 +72,8 @@ class StatusBar(QStatusBar):
         self.alerts_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.alerts_menu = QMenu(self.alerts_button)
         self.alerts_button.setMenu(self.alerts_menu)
-        self.addWidget(self.alerts_button)
+        lay.addWidget(self.alerts_button)
+        lay.addWidget(_separator())
 
         self.units_button = QToolButton()
         self.units_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -68,12 +94,14 @@ class StatusBar(QStatusBar):
             self.temperature_group.addAction(a)
             a.triggered.connect(lambda _=False, u=unit: units.set_temperature(u))
         self.units_button.setMenu(menu)
-        self.addPermanentWidget(self.units_button)
+        lay.addWidget(self.units_button)
+        lay.addWidget(_separator())
 
         self.shortcuts_button = QToolButton()
         self.shortcuts_button.setText("Raccourcis  ?")
+        self.shortcuts_button.setToolTip("Raccourcis clavier")
         self.shortcuts_button.clicked.connect(self.show_shortcuts)
-        self.addPermanentWidget(self.shortcuts_button)
+        lay.addWidget(self.shortcuts_button)
 
         alerts.changed.connect(self._update_alerts)
         units.changed.connect(self._update_units)
@@ -83,14 +111,31 @@ class StatusBar(QStatusBar):
     def _update_alerts(self) -> None:
         items = self.alert_center.alerts
         self.alerts_button.setText(alerts_text(len(items)))
-        color = ("#B91C1C" if any(a.level == ERROR for a in items)
-                 else "#B45309" if items else "#15803D")
+        color = (COLORS["error_text"] if any(a.level == ERROR for a in items)
+                 else COLORS["warning_text"] if items else COLORS["success"])
         self.alerts_button.setStyleSheet(f"color: {color};")
         self.alerts_menu.clear()
         for a in items:
             act = self.alerts_menu.addAction(f"{LEVEL_ICON.get(a.level, '')}  {a.message}")
             act.triggered.connect(lambda _=False, alert=a: self._on_alert(alert))
         self.alerts_button.setEnabled(bool(items))
+
+    # ---- messages (QStatusBar-like) ---------------------------------------
+    def showMessage(self, text: str, timeout_ms: int = 0) -> None:
+        self.message_label.setText(text)
+        self.message_label.setToolTip(text)
+        self.message_label.setVisible(bool(text))
+        self.message_sep.setVisible(bool(text))
+        if timeout_ms > 0:
+            self._message_timer.start(timeout_ms)
+        else:
+            self._message_timer.stop()
+
+    def currentMessage(self) -> str:
+        return self.message_label.text()
+
+    def clearMessage(self) -> None:
+        self.showMessage("")
 
     def _update_units(self) -> None:
         self.units_button.setText(f"{self.units.label} ▾")
