@@ -39,6 +39,24 @@ pytest -q                 # unit tests
 pytest -q -m openfoam     # simulation tests (needs OpenFOAM)
 ```
 
+## Solver strategy
+
+Steady conjugate heat transfer (`chtMultiRegionSimpleFoam`, k-omega SST, gravity on).
+The partitioned fluid/solid coupling makes solid temperatures converge slowly, so
+`runner.run_case` works in phases:
+
+1. **flow**: flow and energy together until the flow residuals converge;
+2. **energy**: frozen flow, energy only (about 4x cheaper per iteration) until every
+   region's maximum temperature is stable;
+3. **check**: 200 coupled iterations so buoyancy reacts to the new temperatures; back to
+   2 if temperatures still move.
+
+Solid temperatures start from an instant lumped estimate (`thermal_estimate.py`).
+Phases end cleanly through SIGUSR1 (`-opt-switch stopAtWriteNowSignal=10`).
+
+Precision levels 1 to 5 set the mesh; `airconstruct check` prints the cell count and a
+run time estimate (`estimate.py`).
+
 ## Conventions
 
 Units are SI, temperatures in °C in the case file. z is up. The enclosure spans

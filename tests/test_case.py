@@ -10,7 +10,7 @@ EXAMPLE = Path(__file__).parent.parent / "examples" / "electronics_box.yaml"
 
 def test_example_loads():
     c = Case.load(EXAMPLE)
-    assert c.solid_regions == ["board", "cpu", "regulator", "ram"]
+    assert c.solid_regions == ["board", "cpu", "heatsink", "regulator", "ram"]
     inlet = next(o for o in c.openings if o.kind == "inlet")
     assert inlet.normal_velocity() == pytest.approx(1.0)
 
