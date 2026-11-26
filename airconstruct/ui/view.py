@@ -13,8 +13,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 from ..case import Case, Face, OpeningKind
 
@@ -33,6 +33,7 @@ class SceneItem:
     style: str = "surface"  # or "wireframe"
     scalars: str | None = None
     kwargs: dict = field(default_factory=dict)
+    key: str | None = None  # selection key (selection.py) of the object it shows
 
 
 def opening_bounds(case: Case, opening) -> tuple[float, float, float, float, float, float]:
@@ -69,21 +70,24 @@ def geometry_items(case: Case) -> list[SceneItem]:
 
     E = case.enclosure.as_tuple()
     items = [SceneItem("enclosure", pv.Box((0, E[0], 0, E[1], 0, E[2])), "#555555",
-                       style="wireframe")]
+                       style="wireframe", key="enclosure")]
     p_max = max((c.power for c in case.components), default=0.0)
     for c in case.components:
         lo, hi = c.box.min, c.box.max
         mesh = pv.Box((lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]))
         edges = {"show_edges": True, "edge_color": "#333333", "line_width": 1}
         if c.power > 0:
-            items.append(SceneItem(c.name, mesh, _heat_color(c.power, p_max), kwargs=edges))
+            items.append(SceneItem(c.name, mesh, _heat_color(c.power, p_max), kwargs=edges,
+                                   key=f"component:{c.name}"))
         else:  # passive part: material colour, see-through so heat sources stay visible
             color = PASSIVE_COLORS.get(c.material, "#9aa5b1")
             opacity = 1.0 if c.material == "fr4" else 0.45
-            items.append(SceneItem(c.name, mesh, color, opacity=opacity, kwargs=edges))
+            items.append(SceneItem(c.name, mesh, color, opacity=opacity, kwargs=edges,
+                                   key=f"component:{c.name}"))
     for o in case.openings:
         color = "#2f80ed" if o.kind == OpeningKind.inlet else "#27ae60"
-        items.append(SceneItem(o.name, pv.Box(opening_bounds(case, o)), color, opacity=0.7))
+        items.append(SceneItem(o.name, pv.Box(opening_bounds(case, o)), color, opacity=0.7,
+                               key=f"opening:{o.name}"))
     return items
 
 
@@ -142,7 +146,8 @@ def result_items(case: Case, regions: dict, field_name: str = "T") -> list[Scene
                 items.append(SceneItem(f"{name}_slice", sl, opacity=0.85, scalars=key,
                                        kwargs=kwargs))
         else:
-            items.append(SceneItem(name, m, scalars=key, kwargs=kwargs))
+            items.append(SceneItem(name, m, scalars=key, kwargs=kwargs,
+                                   key=f"component:{name}"))
     return items
 
 
@@ -150,8 +155,16 @@ def three_d_enabled() -> bool:
     return os.environ.get("AIRCONSTRUCT_NO_3D", "") not in ("1", "true", "yes")
 
 
+CAMERAS = {"top": "Dessus", "front": "Face", "side": "Côté", "iso": "Iso"}
+
+
 class SceneView(QWidget):
-    """pyvistaqt viewport, or a text placeholder when 3D is not available."""
+    """pyvistaqt viewport, or a text placeholder when 3D is not available.
+
+    ``picked(key, additive)`` is emitted when the user clicks an object (key is the
+    item's selection key, additive when Ctrl or Shift is held)."""
+
+    picked = Signal(object, bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -166,6 +179,7 @@ class SceneView(QWidget):
                 self.plotter = QtInteractor(self)
                 self.plotter.set_background("white")
                 layout.addWidget(self.plotter.interactor)
+                self._enable_picking()
             except Exception as exc:  # noqa: BLE001 - no OpenGL, missing package...
                 self.plotter = None
                 self._placeholder(f"3D view unavailable: {exc}")
@@ -199,6 +213,36 @@ class SceneView(QWidget):
         if first or reset_camera:
             p.view_isometric()
             p.reset_camera()
+        p.render()
+
+    def _enable_picking(self) -> None:
+        try:
+            self.plotter.enable_mesh_picking(self._on_pick_actor, use_actor=True, show=False,
+                                             show_message=False, left_clicking=True)
+        except Exception:  # noqa: BLE001, S110 - picking is a convenience
+            pass
+
+    def _on_pick_actor(self, actor) -> None:
+        actors = self.plotter.renderer.actors if self.plotter is not None else {}
+        name = next((n for n, a in actors.items() if a is actor), None)
+        mods = QApplication.keyboardModifiers()
+        additive = bool(mods & (Qt.KeyboardModifier.ControlModifier
+                                | Qt.KeyboardModifier.ShiftModifier))
+        self.pick_name(name, additive)
+
+    def pick_name(self, name: str | None, additive: bool = False) -> None:
+        """Emit ``picked`` for the scene item called ``name`` (also used by tests)."""
+        item = next((i for i in self.last_items if i.name == name), None)
+        self.picked.emit(item.key if item else None, additive)
+
+    def set_camera(self, view: str) -> None:
+        """One of CAMERAS: top (looking down -z), front (-y), side (+x), iso."""
+        p = self.plotter
+        if p is None:
+            return
+        {"top": p.view_xy, "front": p.view_xz, "side": p.view_yz,
+         "iso": p.view_isometric}[view]()
+        p.reset_camera()
         p.render()
 
     def show_case(self, case: Case, reset_camera: bool = False) -> None:

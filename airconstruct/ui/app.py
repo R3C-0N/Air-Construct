@@ -1,52 +1,56 @@
-"""Ultra simple desktop window.
+"""Main window: the app shell around the five step tabs.
 
-Owned by: workstream "ui". Depends only on case.Case, runner.run_case,
-results.summarize/load_regions and estimate.estimate_runtime_s.
+Owned by: workstream "ui" (shared core, see docs/ui-architecture.md).
 
-Layout: left = form (enclosure size, components table, openings table, precision
-slider with estimated time, ambient temperature), centre = 3D view (geometry before
-the run, temperature/velocity after) with the results table under it, bottom = log
-+ Run/Stop buttons. Runs in a QThread so the window stays responsive.
+Layout (see the "Studio" mockup): a top bar (Fichier menu, project name and saved
+state, the step tabs with alert badges, undo/redo, expert mode), then the active
+tab's left panel, the shared 3D viewport and the tab's right panel, and the status
+bar (alerts, messages, units, shortcuts). The shell owns the shared state
+(:class:`~airconstruct.ui.context.AppContext`); the tabs own their panels.
 
 Start it with ``airconstruct-gui [case.yaml]`` or ``python -m airconstruct.ui``.
 """
 
 from __future__ import annotations
 
-import math
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
 
 from pydantic import ValidationError
-from PySide6.QtCore import QSettings, Qt, QThread, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
+from PySide6.QtCore import QSettings, Qt, QTimer
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
-    QPlainTextEdit,
-    QProgressBar,
-    QPushButton,
-    QScrollArea,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
+    QStackedWidget,
+    QTabBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from ..case import Case
-from .form import CaseForm, FormError, format_duration
-from .view import FIELDS, SceneView
-from .worker import RunOutcome, RunWorker
+from .alerts import Alert, AlertCenter
+from .context import AppContext, ExpertMode, Services
+from .project import Project
+from .run import RunController
+from .selection import Selection
+from .statusbar import StatusBar
+from .tabs import TAB_CLASSES, StepTab
+from .units import Units
+from .view import geometry_items
+from .viewport import Viewport
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "electronics_box.yaml"
+MAX_RECENT = 8
 
 
 def default_case() -> Case:
@@ -96,92 +100,16 @@ def _default_preview(case: Case) -> dict[str, float]:
     return estimate_temperatures(case)
 
 
-def expected_iterations(case: Case) -> int:
-    """Iterations a run usually takes (for the progress bar), never above the cap."""
-    try:
-        from ..estimate import ENERGY_ITERATIONS, FLOW_ITERATIONS
-
-        typical = FLOW_ITERATIONS + ENERGY_ITERATIONS
-    except ImportError:
-        typical = case.solver.iterations
-    return max(1, min(case.solver.iterations, typical))
-
-
 def _default_write_report(case: Case, case_dir: Path, out_dir: Path, summary=None) -> Path:
     from ..results import write_report
 
     return write_report(case, case_dir, out_dir, summary=summary)
 
 
-def _fmt(v: float) -> str:
-    return f"{v:.1f}" if math.isfinite(v) else "n/a"
-
-
-class ResultsPanel(QWidget):
-    """Key numbers of a finished run."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.headline = QLabel("No results yet. Press Run.")
-        self.headline.setWordWrap(True)
-        layout.addWidget(self.headline)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Component", "Power (W)", "T max (°C)",
-                                              "T mean (°C)"])
-        self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.table)
-
-    def clear(self, text: str = "No results yet. Press Run.") -> None:
-        self.headline.setText(text)
-        self.table.setRowCount(0)
-
-    def show_estimate(self, case: Case, temps: dict[str, float]) -> None:
-        """Instant lumped estimate (no CFD), shown until a run gives real numbers."""
-        self.headline.setText(
-            "Quick estimate (no CFD, rough and usually optimistic). Press Run for the "
-            "simulation."
-        )
-        power = {c.name: c.power for c in case.components}
-        rows = sorted(temps.items(), key=lambda kv: -kv[1] if math.isfinite(kv[1]) else math.inf)
-        self.table.setRowCount(len(rows))
-        for r, (name, t) in enumerate(rows):
-            for col, v in enumerate([name, _fmt(power.get(name, 0.0)), _fmt(t), "–"]):
-                item = QTableWidgetItem(v)
-                if col:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.table.setItem(r, col, item)
-
-    def show_summary(self, summary) -> None:
-        text = (
-            f"Air max {summary.air_t_max_c:.1f} °C · outlet mean {summary.outlet_t_mean_c:.1f} °C"
-            f" · max velocity {summary.air_v_max:.2f} m/s"
-            f" · pressure drop {summary.pressure_drop_pa:.2f} Pa"
-        )
-        flow = getattr(summary, "mass_flow_kg_s", float("nan"))
-        if math.isfinite(flow):
-            text += f" · air flow {flow * 1000:.2f} g/s"
-        bal = getattr(summary, "energy_balance_error", float("nan"))
-        if math.isfinite(bal):
-            text += f" · energy balance {bal * 100:+.0f} %"
-        warnings = getattr(summary, "warnings", None) or []
-        if warnings:
-            text += "\nWarnings: " + "; ".join(warnings)
-        self.headline.setText(text)
-        rows = sorted(summary.components,
-                      key=lambda c: -c.t_max_c if math.isfinite(c.t_max_c) else math.inf)
-        self.table.setRowCount(len(rows))
-        for r, c in enumerate(rows):
-            for col, v in enumerate(
-                [c.name, _fmt(c.power_w), _fmt(c.t_max_c), _fmt(c.t_mean_c)]
-            ):
-                item = QTableWidgetItem(v)
-                if col:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.table.setItem(r, col, item)
+BADGE_STYLE = {
+    "error": "background:#E0445A; color:white; border-radius:8px; font-size:11px; font-weight:600;",
+    "warning": "background:#F59E0B; color:white; border-radius:8px; font-size:11px; font-weight:600;",
+}
 
 
 class MainWindow(QMainWindow):
@@ -197,218 +125,354 @@ class MainWindow(QMainWindow):
         write_report_fn: Callable | None = None,
         open_report: bool = True,
         preview_fn: Callable[[Case], dict[str, float]] | None = None,
+        settings: QSettings | None = None,
     ) -> None:
         super().__init__()
-        self.settings = QSettings("AirConstruct", "AirConstruct")
-        self.case_path = case_path
+        self.settings = settings or QSettings("AirConstruct", "AirConstruct")
         self.work_dir = Path(
             work_dir or self.settings.value("work_dir", str(Path.home() / "AirConstruct" / "runs"))
         )
-        self._run_fn, self._summarize_fn, self._load_fn = run_fn, summarize_fn, load_regions_fn
-        self._estimate_fn = estimate_fn or _default_estimate
-        self._write_report_fn = write_report_fn or _default_write_report
-        self._open_report = open_report
-        self._preview_fn = preview_fn or _default_preview
-        self.last_report: Path | None = None
-        self.thread: QThread | None = None
-        self.worker: RunWorker | None = None
-        self.outcome: RunOutcome | None = None
-        self.current_case: Case | None = None
-        self.last_run_case: Case | None = None
+        start = case or default_case()
+        self.project = Project(start.model_dump(mode="json"), case_path, parent=self)
+        self.selection = Selection(self)
+        self.units = Units(self.settings, self)
+        self.alerts = AlertCenter(self.project, self)
+        self.expert = ExpertMode(self.settings, self)
+        self.runner = RunController(self.project, lambda: self.work_dir, run_fn, summarize_fn,
+                                    load_regions_fn, parent=self)
+        self.viewport = Viewport(self.selection)
+        self.ctx = AppContext(
+            project=self.project, selection=self.selection, units=self.units,
+            alerts=self.alerts, viewport=self.viewport, runner=self.runner,
+            expert=self.expert, settings=self.settings,
+            services=Services(estimate_runtime=estimate_fn or _default_estimate,
+                              quick_temperatures=preview_fn or _default_preview,
+                              write_report=write_report_fn or _default_write_report,
+                              open_report=open_report),
+            goto_tab=self.goto_tab, show_message=self.show_message,
+            work_dir=lambda: self.work_dir,
+        )
+        self.confirm_discard: Callable[[], bool] = self._ask_save_changes
 
-        self.resize(1400, 850)
+        self.tabs: dict[str, StepTab] = {}
+        self.tab_order: list[str] = []
+        self.current_tab: StepTab | None = None
+
+        self.resize(1440, 900)
+        self._scene_timer = QTimer(self)
+        self._scene_timer.setSingleShot(True)
+        self._scene_timer.setInterval(30)
+        self._scene_timer.timeout.connect(self.refresh_scene)
+        self._build_actions()
         self._build_ui()
-        self._build_menu()
+        for cls in TAB_CLASSES:
+            self.add_tab(cls(self.ctx))
 
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setSingleShot(True)
-        self._refresh_timer.setInterval(250)
-        self._refresh_timer.timeout.connect(self.refresh)
-        self.form.changed.connect(self._refresh_timer.start)
+        self.project.changed.connect(self._on_project_changed)
+        self.project.replaced.connect(self._on_project_replaced)
+        self.project.dirty_changed.connect(lambda _d: self._update_title())
+        self.project.path_changed.connect(self._update_title)
+        self.project.results_changed.connect(self._scene_timer.start)
+        self.alerts.changed.connect(self._update_badges)
+        self.runner.running_changed.connect(lambda _r: self._update_run_action())
+        self.alerts.changed.connect(self._update_run_action)
 
-        self.form.set_case(case or default_case())
-        self.refresh(reset_camera=True)
+        self.goto_tab(self.tab_order[0])
+        self.alerts.refresh()
+        self._update_badges()
         self._update_title()
+        self._update_run_action()
+        self.refresh_scene(reset_camera=True)
 
     # ------------------------------------------------------------------ layout
+    def _action(self, text: str, slot, keys=(), parent_menu: QMenu | None = None) -> QAction:
+        a = QAction(text, self)
+        if keys:
+            a.setShortcuts([QKeySequence(k) for k in keys])
+        a.triggered.connect(slot)
+        self.addAction(a)  # shortcuts work without a menu bar
+        if parent_menu is not None:
+            parent_menu.addAction(a)
+        self.global_actions.append(a)
+        return a
+
+    def _build_actions(self) -> None:
+        self.global_actions: list[QAction] = []
+        self.file_menu = QMenu("Fichier", self)
+        m = self.file_menu
+        self._action("&Nouveau", self.new_case, [QKeySequence.StandardKey.New], m)
+        self._action("&Ouvrir…", self.open_case, [QKeySequence.StandardKey.Open], m)
+        self.recent_menu = m.addMenu("Récents")
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        m.addSeparator()
+        self._action("&Enregistrer", self.save_case, [QKeySequence.StandardKey.Save], m)
+        self._action("Enregistrer &sous…", self.save_case_as, ["Ctrl+Shift+S"], m)
+        m.addSeparator()
+        self._action("Dossier des &calculs…", self.choose_work_dir, (), m)
+        m.addSeparator()
+        self._action("&Quitter", self.close, [QKeySequence.StandardKey.Quit], m)
+
+        self.undo_action = self.project.undo_stack.createUndoAction(self, "Annuler")
+        self.undo_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.Undo)])
+        self.redo_action = self.project.undo_stack.createRedoAction(self, "Rétablir")
+        self.redo_action.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        for a in (self.undo_action, self.redo_action):
+            self.addAction(a)
+            self.global_actions.append(a)
+        self.run_action = self._action("Lancer le calcul", self.start_run, ["Ctrl+R"])
+        self._action("Tout désélectionner", self.selection.clear, ["Esc"])
+
+    def _action_button(self, action: QAction, glyph: str) -> QToolButton:
+        """A fixed-glyph button that follows an action (its tooltip names the step)."""
+        b = QToolButton()
+        b.setText(glyph)
+        b.setStyleSheet("font-size: 15px;")
+
+        def sync() -> None:
+            try:
+                b.setEnabled(action.isEnabled())
+                b.setToolTip(action.text())
+            except RuntimeError:  # window being destroyed
+                pass
+
+        action.changed.connect(sync)
+        b.clicked.connect(action.trigger)
+        sync()
+        return b
+
     def _build_ui(self) -> None:
-        self.form = CaseForm()
-        scroll = QScrollArea()
-        scroll.setWidget(self.form)
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(520)
+        top = QWidget()
+        top.setObjectName("topBar")
+        tl = QHBoxLayout(top)
+        tl.setContentsMargins(6, 4, 6, 4)
+        self.file_button = QToolButton()
+        self.file_button.setText("Fichier ▾")
+        self.file_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.file_button.setMenu(self.file_menu)
+        tl.addWidget(self.file_button)
+        self.name_label = QLabel()
+        self.name_label.setStyleSheet("font-weight: 600;")
+        tl.addWidget(self.name_label)
+        self.state_label = QLabel()
+        self.state_label.setStyleSheet("color: #6B7280;")
+        tl.addWidget(self.state_label)
+        tl.addSpacing(24)
+        self.tab_bar = QTabBar()
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.setDrawBase(False)
+        self.tab_bar.currentChanged.connect(self._on_tab_bar_changed)
+        tl.addWidget(self.tab_bar)
+        tl.addStretch(1)
+        self.undo_button = self._action_button(self.undo_action, "↶")
+        self.redo_button = self._action_button(self.redo_action, "↷")
+        tl.addWidget(self.undo_button)
+        tl.addWidget(self.redo_button)
+        self.expert_check = QCheckBox("Mode expert")
+        self.expert_check.setChecked(self.expert.on)
+        self.expert_check.toggled.connect(self.expert.set)
+        self.expert.changed.connect(self.expert_check.setChecked)
+        tl.addWidget(self.expert_check)
 
-        self.view = SceneView()
-        self.field_combo = QComboBox()
-        for key, label in FIELDS.items():
-            self.field_combo.addItem(label, key)
-        self.field_combo.setEnabled(False)
-        self.field_combo.currentIndexChanged.connect(self._show_field)
-        self.geometry_button = QPushButton("Show geometry")
-        self.geometry_button.clicked.connect(lambda: self.refresh(force_geometry=True))
-        self.report_button = QPushButton("Save HTML report…")
-        self.report_button.setEnabled(False)
-        self.report_button.clicked.connect(self.save_report)
-        view_bar = QHBoxLayout()
-        view_bar.addWidget(QLabel("Show:"))
-        view_bar.addWidget(self.field_combo)
-        view_bar.addWidget(self.geometry_button)
-        view_bar.addStretch(1)
-        view_bar.addWidget(self.report_button)
+        self.left_stack = QStackedWidget()
+        self.left_stack.setMinimumWidth(240)
+        self.right_stack = QStackedWidget()
+        self.right_stack.setMinimumWidth(280)
+        self.body = QSplitter(Qt.Orientation.Horizontal)
+        self.body.addWidget(self.left_stack)
+        self.body.addWidget(self.viewport)
+        self.body.addWidget(self.right_stack)
+        self.body.setStretchFactor(1, 1)
+        self.body.setSizes([300, 760, 380])
 
-        self.results = ResultsPanel()
-        centre = QWidget()
-        cl = QVBoxLayout(centre)
+        central = QWidget()
+        cl = QVBoxLayout(central)
         cl.setContentsMargins(0, 0, 0, 0)
-        cl.addLayout(view_bar)
-        vsplit = QSplitter(Qt.Orientation.Vertical)
-        vsplit.addWidget(self.view)
-        vsplit.addWidget(self.results)
-        vsplit.setSizes([600, 200])
-        cl.addWidget(vsplit)
+        cl.setSpacing(0)
+        cl.addWidget(top)
+        cl.addWidget(self.body, 1)
+        self.setCentralWidget(central)
 
-        top = QSplitter(Qt.Orientation.Horizontal)
-        top.addWidget(scroll)
-        top.addWidget(centre)
-        top.setSizes([560, 840])
+        self.status = StatusBar(self.alerts, self.units, self._on_alert_clicked,
+                                self.all_shortcut_actions, self)
+        self.setStatusBar(self.status)
 
-        # bottom: run controls + log
-        self.run_button = QPushButton("Run")
-        self.run_button.setDefault(True)
-        self.run_button.clicked.connect(self.start_run)
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.stop_run)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.setFormat("Idle")
-        self.residual_label = QLabel("")
-        controls = QHBoxLayout()
-        controls.addWidget(self.run_button)
-        controls.addWidget(self.stop_button)
-        controls.addWidget(self.progress, 1)
-        controls.addWidget(self.residual_label)
-        self.log = QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setMaximumBlockCount(5000)
-        self.log.setPlaceholderText("Solver output appears here.")
-        bottom = QWidget()
-        bl = QVBoxLayout(bottom)
-        bl.setContentsMargins(0, 0, 0, 0)
-        bl.addLayout(controls)
-        bl.addWidget(self.log)
+    # ------------------------------------------------------------------ tabs
+    def add_tab(self, tab: StepTab) -> None:
+        self.tabs[tab.key] = tab
+        self.tab_order.append(tab.key)
+        tab._panels = {}
+        for side, stack, w in (("left", self.left_stack, tab.left_panel()),
+                               ("right", self.right_stack, tab.right_panel())):
+            if w is not None:
+                stack.addWidget(w)
+            tab._panels[side] = w
+        badge = QLabel()  # always there (keeps the tab width), empty when no alert
+        badge.setFixedSize(20, 16)
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tab._badge = badge
+        i = self.tab_bar.addTab(tab.title)
+        self.tab_bar.setTabButton(i, QTabBar.ButtonPosition.RightSide, badge)
+        for a in tab.actions():
+            a.setEnabled(False)
+            self.addAction(a)
+        n = len(self.tab_order)
+        if n <= 9:
+            self._action(f"Étape {n} : {tab.title}", lambda _=False, k=tab.key: self.goto_tab(k),
+                         [f"Ctrl+{n}"])
+        tab.scene_changed.connect(lambda t=tab: t.active and self._scene_timer.start())
+        self.alerts.register(tab.alerts)
 
-        main = QSplitter(Qt.Orientation.Vertical)
-        main.addWidget(top)
-        main.addWidget(bottom)
-        main.setSizes([720, 130])
-        self.setCentralWidget(main)
-        self.status = self.statusBar()
+    def goto_tab(self, key: str) -> None:
+        if key in self.tab_order:
+            self.tab_bar.setCurrentIndex(self.tab_order.index(key))
 
-    def _build_menu(self) -> None:
-        m = self.menuBar().addMenu("&File")
-        for text, key, slot in [
-            ("&New", QKeySequence.StandardKey.New, self.new_case),
-            ("&Open…", QKeySequence.StandardKey.Open, self.open_case),
-            ("&Save", QKeySequence.StandardKey.Save, self.save_case),
-            ("Save &as…", QKeySequence.StandardKey.SaveAs, self.save_case_as),
-        ]:
-            a = QAction(text, self)
-            a.setShortcut(key)
-            a.triggered.connect(slot)
-            m.addAction(a)
-        m.addSeparator()
-        a = QAction("Choose run &folder…", self)
-        a.triggered.connect(self.choose_work_dir)
-        m.addAction(a)
-        m.addSeparator()
-        a = QAction("&Quit", self)
-        a.setShortcut(QKeySequence.StandardKey.Quit)
-        a.triggered.connect(self.close)
-        m.addAction(a)
+    def _on_tab_bar_changed(self, index: int) -> None:
+        if not 0 <= index < len(self.tab_order):
+            return
+        tab = self.tabs[self.tab_order[index]]
+        old = self.current_tab
+        if old is tab:
+            return
+        if old is not None:
+            old.active = False
+            for a in old.actions():
+                a.setEnabled(False)
+            old.deactivated()
+        self.current_tab = tab
+        tab.active = True
+        for side, stack in (("left", self.left_stack), ("right", self.right_stack)):
+            w = tab._panels.get(side)
+            stack.setVisible(w is not None)
+            if w is not None:
+                stack.setCurrentWidget(w)
+        self.viewport.set_tab_toolbar(tab.viewport_toolbar())
+        for a in tab.actions():
+            a.setEnabled(True)
+        tab.activated()
+        self.refresh_scene()
+
+    def _update_badges(self) -> None:
+        for key, tab in self.tabs.items():
+            alerts = self.alerts.for_tab(key)
+            badge: QLabel = tab._badge
+            if not alerts:
+                badge.setText("")
+                badge.setStyleSheet("")
+                badge.setToolTip("")
+                continue
+            level = "error" if any(a.level == "error" for a in alerts) else "warning"
+            badge.setText(str(len(alerts)))
+            badge.setStyleSheet(BADGE_STYLE[level])
+            badge.setToolTip("\n".join(a.message for a in alerts))
+
+    def all_shortcut_actions(self) -> list[QAction]:
+        out = list(self.global_actions)
+        for tab in self.tabs.values():
+            out.extend(tab.actions())
+        return out
+
+    def _on_alert_clicked(self, alert: Alert) -> None:
+        if alert.tab:
+            self.goto_tab(alert.tab)
+        if alert.target:
+            self.selection.set([alert.target])
+
+    # ------------------------------------------------------------------ scene
+    def default_scene(self) -> list:
+        case = self.project.last_valid_case
+        if case is None:
+            return []
+        try:
+            return geometry_items(case)
+        except ImportError:
+            return []
+
+    def refresh_scene(self, reset_camera: bool = False) -> None:
+        self._scene_timer.stop()
+        items = self.current_tab.scene() if self.current_tab is not None else None
+        self.viewport.show_items(self.default_scene() if items is None else items, reset_camera)
+
+    def _on_project_changed(self) -> None:
+        self.selection.prune(self.project.get() or {})
+        self._scene_timer.start()
+
+    def _on_project_replaced(self) -> None:
+        self.selection.clear()
+        self.refresh_scene(reset_camera=True)
+
+    def show_message(self, text: str, timeout_ms: int = 8000) -> None:
+        self.status.showMessage(text, timeout_ms)
 
     def _update_title(self) -> None:
-        name = self.case_path.name if self.case_path else "unsaved case"
-        self.setWindowTitle(f"Air-Construct · {name}")
+        p = self.project
+        name = p.path.name if p.path else p.name
+        self.name_label.setText(name)
+        if p.dirty:
+            state = "modifié"
+        elif p.path is None:
+            state = "non enregistré"
+        else:
+            state = "enregistré"
+        self.state_label.setText(state)
+        self.setWindowTitle(f"Air-Construct · {name}{' •' if p.dirty else ''}")
 
-    # ------------------------------------------------------------------ case
-    def refresh(self, reset_camera: bool = False, force_geometry: bool = False) -> None:
-        """Validate the form, update estimate and 3D preview."""
-        try:
-            case = self.form.to_case()
-        except (FormError, ValidationError, ValueError) as exc:
-            self.current_case = None
-            self.run_button.setEnabled(False)
-            self.status.showMessage(f"Invalid case: {validation_message(exc)}")
-            self.form.set_estimate("Estimated time: –")
-            return
-        self.current_case = case
-        self.run_button.setEnabled(self.thread is None)
-        self.status.showMessage(f"Case OK. Runs are saved in {self.work_dir}")
-        self.form.set_estimate(self.estimate_text(case))
-        if force_geometry or self.outcome is None or not self.outcome.regions:
-            self.view.show_case(case, reset_camera)
-        if self.outcome is None and self.thread is None:
-            self.show_preview(case)
+    # ------------------------------------------------------------------ run
+    def _update_run_action(self) -> None:
+        self.run_action.setEnabled(not self.runner.running and self.project.case is not None
+                                   and not self.alerts.has_errors)
 
-    def show_preview(self, case: Case) -> None:
+    def start_run(self) -> bool:
+        if not self.run_action.isEnabled():
+            return False
+        return self.runner.start()
+
+    # ------------------------------------------------------------------ files
+    def _ask_save_changes(self) -> bool:
+        """True when it is fine to drop the current project (saved, or the user agreed)."""
+        if not self.project.dirty:
+            return True
+        ans = QMessageBox.question(
+            self, "Modifications non enregistrées",
+            "Le projet a été modifié. Enregistrer les modifications ?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+        )
+        if ans == QMessageBox.StandardButton.Save:
+            return self.save_case()
+        return ans == QMessageBox.StandardButton.Discard
+
+    def new_case(self, case: Case | None = None) -> bool:
+        if self.runner.running or not self.confirm_discard():
+            return False
+        self.project.reset_case(case or default_case())
+        return True
+
+    def load_case(self, path: Path) -> bool:
+        if self.runner.running or not self.confirm_discard():
+            return False
         try:
-            temps = self._preview_fn(case)
-        except NotImplementedError:
-            self.results.clear()
-            return
+            self.project.load(path)
         except Exception as exc:  # noqa: BLE001
-            self.results.clear(f"No quick estimate: {exc}")
-            return
-        self.results.show_estimate(case, temps)
-
-    def estimate_text(self, case: Case) -> str:
-        try:
-            s = self._estimate_fn(case)
-        except NotImplementedError:
-            return "Estimated time: not available yet"
-        except Exception as exc:  # noqa: BLE001
-            return f"Estimated time: unavailable ({exc})"
-        return f"Estimated time: about {format_duration(s)}"
-
-    def _ask_discard_results(self) -> None:
-        self.outcome = None
-        self.results.clear()
-        self.field_combo.setEnabled(False)
-        self.report_button.setEnabled(False)
-
-    def load_case(self, path: Path) -> None:
-        try:
-            case = Case.load(path)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "Open case", f"Could not open {path}:\n{validation_message(exc)}")
-            return
-        self.case_path = Path(path)
-        self._ask_discard_results()
-        self.form.set_case(case)
-        self.refresh(reset_camera=True)
-        self._update_title()
-
-    def new_case(self) -> None:
-        self.case_path = None
-        self._ask_discard_results()
-        self.form.set_case(default_case())
-        self.refresh(reset_camera=True)
-        self._update_title()
+            QMessageBox.warning(self, "Ouvrir", f"Impossible d’ouvrir {path} :\n{exc}")
+            return False
+        self._add_recent(Path(path))
+        self.goto_tab(self.tab_order[0])
+        return True
 
     def open_case(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Open case", "", "Case files (*.yaml *.yml)")
+        path, _ = QFileDialog.getOpenFileName(self, "Ouvrir un cas", "",
+                                              "Cas Air-Construct (*.yaml *.yml)")
         if path:
             self.load_case(Path(path))
 
     def save_case(self) -> bool:
-        if self.case_path is None:
+        if self.project.path is None:
             return self.save_case_as()
-        return self.write_case(self.case_path)
+        return self.write_case(self.project.path)
 
     def save_case_as(self) -> bool:
-        path, _ = QFileDialog.getSaveFileName(self, "Save case", "", "Case files (*.yaml)")
+        path, _ = QFileDialog.getSaveFileName(self, "Enregistrer le cas", "",
+                                              "Cas Air-Construct (*.yaml)")
         if not path:
             return False
         if not path.lower().endswith((".yaml", ".yml")):
@@ -417,165 +481,57 @@ class MainWindow(QMainWindow):
 
     def write_case(self, path: Path) -> bool:
         try:
-            case = self.form.to_case()
-        except (FormError, ValidationError, ValueError) as exc:
-            QMessageBox.warning(self, "Save case", f"The case is not valid:\n{validation_message(exc)}")
+            saved = self.project.save(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "Enregistrer", f"Impossible d’enregistrer :\n{exc}")
             return False
-        case.save(path)
-        self.case_path = Path(path)
-        self._update_title()
-        self.status.showMessage(f"Saved {path}")
+        self._add_recent(saved)
+        msg = f"Enregistré dans {saved}"
+        if self.project.case is None:
+            msg += " (le cas n’est pas encore valide)"
+        self.show_message(msg)
         return True
 
+    def recent_files(self) -> list[str]:
+        v = self.settings.value("recent_files", [])
+        if isinstance(v, str):
+            v = [v]
+        return [str(p) for p in (v or [])]
+
+    def _add_recent(self, path: Path) -> None:
+        p = str(Path(path).resolve())
+        files = [p] + [f for f in self.recent_files() if f != p]
+        self.settings.setValue("recent_files", files[:MAX_RECENT])
+
+    def _fill_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        files = self.recent_files()
+        if not files:
+            self.recent_menu.addAction("(aucun)").setEnabled(False)
+        for f in files:
+            a = self.recent_menu.addAction(f)
+            a.triggered.connect(lambda _=False, p=f: self.load_case(Path(p)))
+
     def choose_work_dir(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Run folder", str(self.work_dir))
+        d = QFileDialog.getExistingDirectory(self, "Dossier des calculs", str(self.work_dir))
         if d:
             self.work_dir = Path(d)
             self.settings.setValue("work_dir", d)
-            self.refresh()
-
-    # ------------------------------------------------------------------ run
-    def start_run(self) -> None:
-        if self.thread is not None:
-            return
-        self.refresh()
-        case = self.current_case
-        if case is None:
-            return
-        self._ask_discard_results()
-        self.last_run_case = case
-        self.log.clear()
-        self.residual_label.setText("")
-        self.progress.setRange(0, expected_iterations(case))
-        self.progress.setValue(0)
-        self.progress.setFormat("Starting…")
-        self.run_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-        self.form.setEnabled(False)
-
-        self.thread = QThread(self)
-        self.worker = RunWorker(case, self.work_dir, self._run_fn, self._summarize_fn,
-                                self._load_fn)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.worker.log.connect(self._on_log)
-        self.worker.residual.connect(self._on_residual)
-        self.worker.stage.connect(self._on_stage)
-        self.worker.finished.connect(self._on_finished)
-        self.worker.finished.connect(self.thread.quit)
-        self.thread.finished.connect(self._on_thread_done)
-        self.thread.start()
-
-    def stop_run(self) -> None:
-        if self.worker is not None:
-            self.worker.request_stop()
-            self.stop_button.setEnabled(False)
-            self.progress.setFormat("Stopping…")
-
-    PHASES: ClassVar[dict[str, str]] = {"flow": "Solving air flow", "energy": "Solving temperatures",
-              "check": "Checking buoyancy"}
-
-    def _on_log(self, line: str) -> None:
-        self.log.appendPlainText(line)
-        if line.startswith("--- phase "):
-            name = line[len("--- phase "):].split(":")[0].strip()
-            self._on_stage(self.PHASES.get(name, name))
-        elif line.startswith("$ "):
-            cmd = line[2:].split()[0] if line[2:].split() else ""
-            if cmd not in ("mpirun",) and not cmd.startswith("chtMultiRegion"):
-                self._on_stage(f"Meshing ({cmd})")
-
-    def _on_stage(self, stage: str) -> None:
-        if stage == "Post-processing":
-            self.progress.setRange(0, 0)  # busy indicator
-            self.progress.setFormat("Post-processing…")
-        else:
-            self.progress.setFormat(f"{stage}… iteration %v")
-        self.status.showMessage(stage)
-
-    def _on_residual(self, iteration: int, residuals: dict) -> None:
-        cap = self.last_run_case.solver.iterations if self.last_run_case else iteration
-        if 0 < self.progress.maximum() < iteration:  # longer than usual: show the cap
-            self.progress.setMaximum(max(iteration, cap))
-        if self.progress.maximum() > 0:
-            self.progress.setValue(min(iteration, self.progress.maximum()))
-        if residuals:
-            worst = max(residuals, key=lambda k: residuals[k])
-            self.residual_label.setText(f"max residual {worst}: {residuals[worst]:.2e}")
-
-    def _on_finished(self, outcome: RunOutcome) -> None:
-        self.outcome = outcome
-        self.progress.setRange(0, 1)
-        self.progress.setValue(1 if outcome.success else 0)
-        r = outcome.result
-        if outcome.stopped:
-            state = "Stopped"
-        elif outcome.success:
-            state = "Converged" if getattr(r, "converged", False) else "Finished (not converged)"
-        else:
-            state = "Failed"
-        if r is not None:
-            state += f" after {getattr(r, 'iterations', 0)} iterations"
-            state += f" in {format_duration(getattr(r, 'wall_time_s', 0.0))}"
-        self.progress.setFormat(state)
-        self.status.showMessage(state + (": " + outcome.errors[0] if outcome.errors else ""))
-        if outcome.summary is not None:
-            self.results.show_summary(outcome.summary)
-        elif outcome.errors:
-            self.results.clear("No results: " + outcome.errors[0])
-        if outcome.regions and self.last_run_case is not None:
-            self.field_combo.setEnabled(True)
-            self._show_field()
-        self.report_button.setEnabled(outcome.success)
-
-    def _on_thread_done(self) -> None:
-        if self.worker is not None:
-            self.worker.deleteLater()
-        if self.thread is not None:
-            self.thread.deleteLater()
-        self.worker = None
-        self.thread = None
-        self.stop_button.setEnabled(False)
-        self.form.setEnabled(True)
-        self.run_button.setEnabled(self.current_case is not None)
-
-    def _show_field(self, *_args) -> None:
-        if self.outcome and self.outcome.regions and self.last_run_case is not None:
-            self.view.show_results(self.last_run_case, self.outcome.regions,
-                                   self.field_combo.currentData())
-
-    def save_report(self) -> None:
-        if not (self.outcome and self.outcome.success and self.last_run_case):
-            return
-        case_dir = Path(self.outcome.result.case_dir)
-        self.status.showMessage("Writing report…")
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            path = self._write_report_fn(self.last_run_case, case_dir, case_dir / "report",
-                                         summary=self.outcome.summary)
-        except NotImplementedError:
-            QMessageBox.information(self, "Report", "HTML reports are not implemented yet.")
-            return
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.warning(self, "Report", f"Could not write the report:\n{exc}")
-            return
-        finally:
-            QApplication.restoreOverrideCursor()
-        self.last_report = Path(path)
-        self.status.showMessage(f"Report written to {path}")
-        if self._open_report:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            self.show_message(f"Les calculs sont enregistrés dans {self.work_dir}")
 
     def closeEvent(self, event) -> None:
-        if self.thread is not None:
-            ans = QMessageBox.question(self, "Quit", "A simulation is running. Stop it and quit?")
+        if self.runner.running:
+            ans = QMessageBox.question(self, "Quitter",
+                                       "Un calcul est en cours. L’arrêter et quitter ?")
             if ans != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
-            self.stop_run()
-            self.thread.quit()
-            self.thread.wait(10000)
-        self.view.close_plotter()
+            self.runner.stop()
+            self.runner.wait(10000)
+        elif not self.confirm_discard():
+            event.ignore()
+            return
+        self.viewport.close_plotter()
         super().closeEvent(event)
 
 

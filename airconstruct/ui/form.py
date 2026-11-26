@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from ..case import Case, Face, OpeningKind
 from ..materials import SOLIDS
+from .run import format_duration  # noqa: F401 - re-exported
 
 MM = 1e-3  # metres per millimetre
 M3H = 1.0 / 3600.0  # m3/s per m3/h
@@ -47,17 +48,6 @@ OPENING_COLUMNS = [
 
 class FormError(ValueError):
     """A cell of the form could not be read (e.g. text in a number column)."""
-
-
-def format_duration(seconds: float) -> str:
-    """Human readable duration, e.g. '45 s', '12 min', '2 h 05 min'."""
-    s = max(0.0, float(seconds))
-    if s < 60:
-        return f"{s:.0f} s"
-    if s < 3600:
-        return f"{s / 60:.0f} min"
-    h, m = divmod(round(s / 60), 60)
-    return f"{h} h {m:02d} min"
 
 
 def _num(v: float) -> str:
@@ -321,7 +311,14 @@ class CaseForm(QWidget):
 
     def to_case(self) -> Case:
         """Build a Case from the form. Raises FormError or pydantic.ValidationError."""
-        base = self._base.model_dump(mode="json") if self._base else {}
+        return Case.model_validate(self.to_data())
+
+    def to_data(self, base: dict | None = None) -> dict:
+        """The case data shown by the form, not validated (raises FormError only).
+        Keys the form does not show are taken from ``base`` (default: the last case
+        given to set_case)."""
+        if base is None:
+            base = self._base.model_dump(mode="json") if self._base else {}
         data = dict(base)
         data["name"] = self.name_edit.text().strip()
         ex, ey, ez = (v * MM for v in self._enclosure_mm())
@@ -368,7 +365,7 @@ class CaseForm(QWidget):
         solver["iterations"] = self.iterations_spin.value()
         solver["cores"] = self.cores_spin.value()
         data["solver"] = solver
-        return Case.model_validate(data)
+        return data
 
     def set_estimate(self, text: str) -> None:
         self.estimate_label.setText(text)
