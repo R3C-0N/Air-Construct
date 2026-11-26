@@ -51,8 +51,8 @@ def _fluid_thermo(case: Case) -> dict:
     }
 
 
-def _solid_thermo(c: Component) -> dict:
-    m = SOLIDS[c.material]
+def _solid_thermo(case: Case, c: Component) -> dict:
+    m = case.solid(c.material)
     return {
         "thermoType": {
             "type": "heSolidThermo", "mixture": "pureMixture", "transport": "constIso",
@@ -245,7 +245,7 @@ def write_case_setup(case: Case, case_dir: Path) -> None:
     write_foam_dict(sysd / air / "decomposeParDict", _decompose(max(1, case.solver.cores)))
     for comp in case.components:
         cs = d / "constant" / comp.name
-        write_foam_dict(cs / "thermophysicalProperties", _solid_thermo(comp))
+        write_foam_dict(cs / "thermophysicalProperties", _solid_thermo(case, comp))
         write_foam_dict(cs / "radiationProperties", {"radiation": "off", "radiationModel": "none"})
         if comp.power > 0:
             write_foam_dict(cs / "fvOptions", _heat_source(comp))

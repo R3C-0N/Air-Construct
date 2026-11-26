@@ -662,8 +662,6 @@ def _solid_kappa(case: Case, case_dir: Path, region: str) -> float:
     (what the solver used), else from the material library."""
     import re
 
-    from .materials import SOLIDS
-
     f = Path(case_dir) / "constant" / region / "thermophysicalProperties"
     try:
         m = re.search(r"\bkappa\s+(" + _NUM + r")\s*;", f.read_text(errors="replace"))
@@ -672,7 +670,7 @@ def _solid_kappa(case: Case, case_dir: Path, region: str) -> float:
     except OSError:
         pass
     comp = next((c for c in case.components if c.name == region), None)
-    return SOLIDS[comp.material].kappa if comp else float("nan")
+    return case.solid(comp.material).kappa if comp else float("nan")
 
 
 def _normals(poly) -> np.ndarray:
