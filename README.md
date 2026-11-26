@@ -51,7 +51,8 @@ Optional: `AIRCONSTRUCT_WSL_DISTRO` picks a distro other than the default one,
 
 ## Download (Windows / Linux)
 
-Every push to `main` builds the desktop app in GitHub Actions
+Every push to `main` (finished work merged from `develop`, see
+[CONTRIBUTING.md](CONTRIBUTING.md)) builds the desktop app in GitHub Actions
 ([Build desktop app](../../actions/workflows/build.yml)): open the latest run and download
 the `Air-Construct-windows-x64` artifact (installer `...-setup.exe`, or a portable `.zip`)
 or `Air-Construct-linux-x64` (`.tar.gz`). Tagging a version `v*` attaches the same
