@@ -86,7 +86,7 @@ def _field_values(mesh, name: str):
             v = np.asarray(data[name])
             if name == "U":
                 return np.linalg.norm(v.reshape(len(v), -1), axis=1)
-            return v - KELVIN if float(np.nanmax(v)) > 150.0 else v
+            return v - KELVIN  # OpenFOAM temperatures are Kelvin
     return None
 
 
