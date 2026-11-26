@@ -313,3 +313,30 @@ def test_window_with_real_results_module(qapp, tmp_path):
     win.save_report()
     assert win.last_report is not None and win.last_report.exists()
     win.close()
+
+
+@pytest.mark.openfoam
+def test_window_real_openfoam_run(qapp, tmp_path):
+    """Run button -> real runner (OpenFOAM) -> real results, with a short iteration cap."""
+    from airconstruct.runner import detect_backend
+
+    ok, msg = detect_backend().available()
+    if not ok:
+        if os.environ.get("AIRCONSTRUCT_REQUIRE_OPENFOAM"):
+            pytest.fail(msg)
+        pytest.skip(msg)
+    case = Case.load(SHIPPED_EXAMPLE)
+    case.precision.level = 1
+    case.solver.iterations = 300
+    win = MainWindow(case=case, work_dir=tmp_path / "runs", open_report=False)
+    win.start_run()
+    assert wait_until(qapp, lambda: win.thread is None and win.outcome is not None, 1200)
+    log = win.log.toPlainText()
+    assert win.outcome.success, "\n".join(win.outcome.errors) + "\n" + log[-3000:]
+    assert "--- phase flow" in log
+    assert win.outcome.summary is not None
+    assert "air" in win.outcome.regions
+    assert win.results.table.rowCount() == len(case.components)
+    win.save_report()
+    assert win.last_report is not None and win.last_report.exists()
+    win.close()
