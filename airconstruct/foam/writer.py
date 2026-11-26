@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from ..case import Case, Component, Opening, OpeningKind
+from ..case import Case, Component, Opening, OpeningKind, WallMode
 from ..fans import air_density, estimate_flow, opening_velocity
 from ..materials import GASES, SOLIDS
 from ..mesh import FACE_AXES, grille_depth, grille_zone, plan_mesh
@@ -105,7 +105,35 @@ def _control_dict(case: Case) -> dict:
         "runTimeModifiable": True,
         # SIGUSR1 = write now and stop: used by the runner to end a phase cleanly
         "OptimisationSwitches": {"stopAtWriteNowSignal": 10},
+        **({"functions": probe_functions(case)} if case.probes else {}),
     }
+
+
+def probe_function_name(region: str) -> str:
+    return f"probes_{region}"
+
+
+def probe_functions(case: Case) -> dict:
+    """One `probes` function object per region holding probes (T everywhere, U and
+    p_rgh in the air), sampled every solver.probe_interval iterations. Output:
+    postProcessing/[<region>/]probes_<region>/<start time>/<field>."""
+    by_region: dict[str, list] = {}
+    for pr in case.probes:
+        by_region.setdefault(case.probe_region(pr), []).append(pr)
+    out = {}
+    for region, probes in by_region.items():
+        fluid = region == case.fluid_region
+        out[probe_function_name(region)] = {
+            "type": "probes",
+            "libs": "(sampling)",
+            "region": region,
+            "writeControl": "timeStep",
+            "writeInterval": case.solver.probe_interval,
+            "fields": "(T U p_rgh)" if fluid else "(T)",
+            "probeLocations": "(" + " ".join(
+                f"({p.point.x:.9g} {p.point.y:.9g} {p.point.z:.9g})" for p in probes) + ")",
+        }
+    return out
 
 
 def _fluid_schemes() -> dict:
@@ -337,6 +365,31 @@ def _grille_sources(case: Case, depth: float) -> dict:
     return out
 
 
+def wall_bcs(case: Case, kappa_method: str) -> dict[str, dict]:
+    """T boundary condition of every enclosure wall patch that exchanges heat
+    (adiabatic walls are left to the zeroGradient default)."""
+    out = {}
+    for name, faces in case.wall_patches().items():
+        w = case.walls.for_face(faces[0])
+        if w.mode != WallMode.exchange:
+            continue
+        t_ext = w.t_external if w.t_external is not None else case.ambient_temperature
+        bc = {
+            "type": "externalWallHeatFluxTemperature",
+            "mode": "coefficient",
+            "Ta": f"constant {_tk(t_ext)}",
+            "h": f"uniform {w.h_external:g}",
+            "thicknessLayers": f"({w.thickness:g})",
+            "kappaLayers": f"({SOLIDS[w.material].kappa:g})",
+            "kappaMethod": kappa_method,
+        }
+        if w.emissivity > 0:
+            bc["emissivity"] = w.emissivity
+        bc["value"] = "$internalField"
+        out[name] = bc
+    return out
+
+
 def write_initial_fields(case: Case, case_dir: Path) -> None:
     """Write 0/<region>/ fields. Must be called AFTER splitMeshRegions."""
     d = Path(case_dir) / "0"
@@ -351,6 +404,8 @@ def write_initial_fields(case: Case, case_dir: Path) -> None:
         out: dict = {".*": default}
         if interface is not None:
             out[iface] = interface
+        if name == "T":
+            out.update(wall_bcs(case, "fluidThermo"))
         for o in case.openings:
             out[o.name] = per_opening[o.name][name]
         return out
@@ -396,6 +451,7 @@ def write_initial_fields(case: Case, case_dir: Path) -> None:
         t0 = _tk(t_guess.get(comp.name, case.ambient_temperature))
         body, cls = _vol("volScalarField", "[0 0 0 1 0 0 0]", f"uniform {t0}", {
             ".*": {"type": "zeroGradient"},
+            **wall_bcs(case, "solidThermo"),
             f"{comp.name}_to_.*": coupled_solid,
         })
         write_foam_dict(d / comp.name / "T", body, cls=cls, obj="T")

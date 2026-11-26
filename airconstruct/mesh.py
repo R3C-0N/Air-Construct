@@ -5,7 +5,8 @@ Owned by: workstream "meshing".
 Strategy (MVP, axis-aligned boxes only):
   1. blockMesh: one hex block for the enclosure, with piecewise-uniform grading so that
      every component and opening edge falls exactly on a cell face (no staircase, thin
-     parts such as boards still get cells). One "walls" patch for the 6 faces.
+     parts such as boards still get cells). One "walls" patch for the 6 faces, or
+     "walls_<face>" patches when the walls differ per face.
   2. topoSet + createPatch: each Opening becomes its own patch (named opening.name),
      selected with a thin boxToFace on the enclosure face.
   3. topoSet: one cellZone per component (boxToCell) + cellZone "air" for the rest.
@@ -46,13 +47,29 @@ TOL = 1e-9
 class AxisGrid:
     breakpoints: list[float]  # sorted, first = 0, last = L
     cells: list[int]  # cells per segment
+    ratios: list[float] | None = None  # blockMesh expansion (last / first cell) per segment
 
     @property
     def n(self) -> int:
         return sum(self.cells)
 
+    def _ratios(self) -> list[float]:
+        return self.ratios if self.ratios is not None else [1.0] * len(self.cells)
+
+    def spacings(self) -> list[tuple[float, float]]:
+        """(first, last) cell size of every segment."""
+        out = []
+        for a, b, n, r in zip(self.breakpoints, self.breakpoints[1:], self.cells, self._ratios()):
+            if n == 1 or abs(r - 1.0) < 1e-12:
+                out.append(((b - a) / n, (b - a) / n))
+                continue
+            rc = r ** (1.0 / (n - 1))
+            first = (b - a) * (rc - 1.0) / (rc**n - 1.0)
+            out.append((first, first * r))
+        return out
+
     def min_spacing(self) -> float:
-        return min((b - a) / c for a, b, c in zip(self.breakpoints, self.breakpoints[1:], self.cells))
+        return min(min(s) for s in self.spacings())
 
 
 @dataclass
@@ -96,7 +113,27 @@ def grille_zone(o: Opening) -> str:
     return f"grille_{o.name}"
 
 
-def _axis_grid(L: float, points: set[float], h: float, min_cells: int) -> AxisGrid:
+Zone = tuple[float, float, float, float]  # (lo, hi, fine cell size, transition length)
+
+
+def _spacing(x: float, h: float, zones: list[Zone]) -> float:
+    """Target cell size at x: the fine size inside a zone, growing linearly back to h
+    over its transition length."""
+    s = h
+    for lo, hi, hf, m in zones:
+        d = max(lo - x, 0.0, x - hi)
+        if d <= 0:
+            s = min(s, hf)
+        elif m > 0 and d < m:
+            s = min(s, hf + (h - hf) * d / m)
+    return s
+
+
+def _axis_grid(L: float, points: set[float], h: float, min_cells: int,
+               zones: list[Zone] | None = None) -> AxisGrid:
+    zones = zones or []
+    for lo, hi, _, m in zones:  # zone and transition ends are grid lines too
+        points = points | {lo, hi, lo - m, hi + m}
     pts = sorted(p for p in points | {0.0, L} if -TOL <= p <= L + TOL)
     bp: list[float] = []
     for p in pts:
@@ -107,8 +144,35 @@ def _axis_grid(L: float, points: set[float], h: float, min_cells: int) -> AxisGr
         bp.append(L)
     else:
         bp[-1] = L
-    cells = [max(min_cells, math.ceil((b - a) / h - 1e-6)) for a, b in itertools.pairwise(bp)]
-    return AxisGrid(bp, cells)
+    cells, ratios = [], []
+    for a, b in itertools.pairwise(bp):
+        if not zones:
+            cells.append(max(min_cells, math.ceil((b - a) / h - 1e-6)))
+            ratios.append(1.0)
+            continue
+        # cells = integral of dx / s(x) (midpoint rule), graded from s(a) to s(b)
+        k = 64
+        dx = (b - a) / k
+        n_ideal = sum(dx / _spacing(a + (i + 0.5) * dx, h, zones) for i in range(k))
+        n = max(min_cells, math.ceil(n_ideal - 1e-6))
+        eps = 1e-9 * (b - a)
+        r = _spacing(b - eps, h, zones) / _spacing(a + eps, h, zones)
+        cells.append(n)
+        ratios.append(1.0 if n == 1 or abs(r - 1.0) < 1e-9 else r)
+    return AxisGrid(bp, cells, ratios)
+
+
+def refinement_zones(case: Case, h: float) -> list[list[Zone]]:
+    """Per axis, the refinement zones of case.refinements."""
+    comps = {c.name: c for c in case.components}
+    out: list[list[Zone]] = [[], [], []]
+    for r in case.refinements:
+        c = comps[r.target]
+        hf = min(h, r.cell_size if r.cell_size is not None else h / r.factor)
+        m = r.margin if r.margin is not None else 3.0 * h
+        for i in range(3):
+            out[i].append((c.box.min[i], c.box.max[i], hf, m))
+    return out
 
 
 def plan_mesh(case: Case) -> MeshPlan:
@@ -128,7 +192,8 @@ def plan_mesh(case: Case) -> MeshPlan:
             lo, hi = grille_box(case, o, depth)
             normal = FACE_AXES[o.face][0]
             points[normal].update((lo[normal], hi[normal]))
-    axes = tuple(_axis_grid(E[i], points[i], h, min_cells) for i in range(3))
+    zones = refinement_zones(case, h)
+    axes = tuple(_axis_grid(E[i], points[i], h, min_cells, zones[i]) for i in range(3))
     div = tuple(a.n for a in axes)
     n = div[0] * div[1] * div[2]
     warnings = []
@@ -145,7 +210,8 @@ def plan_mesh(case: Case) -> MeshPlan:
 
 
 def _grading(g: AxisGrid) -> list:
-    return [[round(b - a, 12), c, 1] for a, b, c in zip(g.breakpoints, g.breakpoints[1:], g.cells)]
+    return [[round(b - a, 12), c, round(r, 9)]
+            for a, b, c, r in zip(g.breakpoints, g.breakpoints[1:], g.cells, g._ratios())]
 
 
 def write_mesh_dicts(case: Case, case_dir: Path, plan: MeshPlan | None = None) -> MeshPlan:
@@ -158,7 +224,7 @@ def write_mesh_dicts(case: Case, case_dir: Path, plan: MeshPlan | None = None) -
     verts = [(0, 0, 0), (X, 0, 0), (X, Y, 0), (0, Y, 0), (0, 0, Z), (X, 0, Z), (X, Y, Z), (0, Y, Z)]
     nx, ny, nz = plan.divisions
     grading = "simpleGrading (" + " ".join(
-        "(" + " ".join(f"({lf:g} {c} {e})" for lf, c, e in _grading(g)) + ")" for g in plan.axes
+        "(" + " ".join(f"({lf:g} {c} {e:g})" for lf, c, e in _grading(g)) + ")" for g in plan.axes
     ) + ")"
     write_foam_dict(
         sysd / "blockMeshDict",
@@ -167,9 +233,7 @@ def write_mesh_dicts(case: Case, case_dir: Path, plan: MeshPlan | None = None) -
             "vertices": "(\n" + "\n".join(f"    ({x:g} {y:g} {z:g})" for x, y, z in verts) + "\n)",
             "blocks": f"(\n    hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) {grading}\n)",
             "edges": "()",
-            "boundary": "(\n    walls\n    {\n        type wall;\n        faces\n        (\n"
-            "            (0 4 7 3) (1 2 6 5) (0 1 5 4) (3 7 6 2) (0 3 2 1) (4 5 6 7)\n"
-            "        );\n    }\n)",
+            "boundary": _boundary(case),
             "mergePatchPairs": "()",
         },
     )
@@ -225,6 +289,21 @@ def write_mesh_dicts(case: Case, case_dir: Path, plan: MeshPlan | None = None) -
         write_foam_dict(sysd / case.fluid_region / "topoSetDict.grilles",
                         {"actions": _list(grille_actions)}, obj="topoSetDict")
     return plan
+
+
+# blockMesh vertex quads of the enclosure faces
+_FACE_QUADS = {Face.xmin: "(0 4 7 3)", Face.xmax: "(1 2 6 5)", Face.ymin: "(0 1 5 4)",
+               Face.ymax: "(3 7 6 2)", Face.zmin: "(0 3 2 1)", Face.zmax: "(4 5 6 7)"}
+
+
+def _boundary(case: Case) -> str:
+    """One wall patch for the 6 faces, or one per face (see Case.wall_patches)."""
+    body = ""
+    for name, faces in case.wall_patches().items():
+        quads = " ".join(_FACE_QUADS[f] for f in faces)
+        body += (f"    {name}\n    {{\n        type wall;\n        faces\n        (\n"
+                 f"            {quads}\n        );\n    }}\n")
+    return "(\n" + body + ")"
 
 
 def _box(lo, hi) -> str:

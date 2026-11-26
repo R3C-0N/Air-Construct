@@ -187,6 +187,55 @@ class Opening(BaseModel):
         raise ValueError(f"opening {self.name!r} has no imposed flow rate")
 
 
+class WallMode(str, Enum):
+    adiabatic = "adiabatic"  # no heat through the wall
+    exchange = "exchange"  # conduction through the wall + convection (and radiation) outside
+
+
+class WallThermal(BaseModel):
+    """Thermal behaviour of an enclosure wall.
+
+    exchange: heat crosses the wall (``thickness`` of ``material``, 1D conduction) and
+    leaves to the surroundings at ``t_external`` (default: ambient) through an outside
+    convection coefficient ``h_external`` and, if ``emissivity`` > 0, by radiation.
+    OpenFOAM: externalWallHeatFluxTemperature (mode coefficient) on air and solid sides."""
+
+    mode: WallMode = WallMode.adiabatic
+    material: str = "aluminium"
+    thickness: float = Field(default=0.001, gt=0.0)  # [m]
+    h_external: float = Field(default=5.0, gt=0.0)  # [W/m2/K], ~5 for still air
+    t_external: float | None = None  # [degC]; default: ambient temperature
+    emissivity: float = Field(default=0.0, ge=0.0, le=1.0)  # outer surface, 0 = no radiation
+
+    @field_validator("material")
+    @classmethod
+    def _known_solid(cls, v: str) -> str:
+        if v not in SOLIDS:
+            raise ValueError(f"unknown solid material {v!r}, known: {sorted(SOLIDS)}")
+        return v
+
+    def resistance(self) -> float:
+        """Conduction + outside convection resistance per unit area [m2.K/W]."""
+        return self.thickness / SOLIDS[self.material].kappa + 1.0 / self.h_external
+
+
+class Walls(WallThermal):
+    """Enclosure walls: one setting for every face, with optional per-face overrides
+    (``faces: {zmin: {mode: adiabatic}}`` for a box standing on an insulating floor)."""
+
+    faces: dict[Face, WallThermal] = {}
+
+    def for_face(self, face: Face) -> WallThermal:
+        if face in self.faces:
+            return self.faces[face]
+        return WallThermal(**self.model_dump(exclude={"faces"}))
+
+    @property
+    def per_face(self) -> bool:
+        """True when faces differ, so each face needs its own patch."""
+        return bool(self.faces)
+
+
 class Precision(BaseModel):
     """Mesh resolution. level 1 (very coarse, fast) .. 5 (very fine, slow).
     cell_size overrides the level when given (expert mode)."""
@@ -195,8 +244,29 @@ class Precision(BaseModel):
     cell_size: float | None = None
 
 
+class Probe(BaseModel):
+    """A point where temperature (and air velocity, in the air) is recorded every
+    ``solver.probe_interval`` iterations: a virtual thermocouple / anemometer."""
+
+    name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    point: Vec3
+
+
+class Refinement(BaseModel):
+    """Finer mesh around a component: cells of ``cell_size`` (default: bulk size /
+    ``factor``) over the component's extent, growing back to the bulk size over
+    ``margin`` (default: 3 bulk cells) around it. The mesh is a structured grid, so the
+    refinement spans the whole enclosure along each axis (a slab through the part)."""
+
+    target: str  # component name
+    factor: int = Field(default=2, ge=1, le=8)
+    cell_size: float | None = Field(default=None, gt=0.0)  # [m], overrides factor
+    margin: float | None = Field(default=None, ge=0.0)  # [m]
+
+
 class Solver(BaseModel):
     iterations: int = 20000  # cap on total solver iterations
+    probe_interval: int = Field(default=10, ge=1)  # iterations between probe samples
     cores: int = 1
     turbulence: str = "kOmegaSST"  # or "laminar"
     gravity: bool = True
@@ -211,6 +281,9 @@ class Case(BaseModel):
     ambient_pressure: float = 101325.0  # [Pa]
     components: list[Component] = []
     openings: list[Opening] = []
+    walls: Walls = Walls()
+    probes: list[Probe] = []
+    refinements: list[Refinement] = []
     precision: Precision = Precision()
     solver: Solver = Solver()
 
@@ -224,7 +297,7 @@ class Case(BaseModel):
     @model_validator(mode="after")
     def _check_geometry(self) -> Case:
         names = [c.name for c in self.components] + [o.name for o in self.openings]
-        reserved = {"air", self.fluid, "walls", "defaultFaces"}
+        reserved = {"air", self.fluid, "walls", "defaultFaces"} | {f"walls_{f.value}" for f in Face}
         dup = {n for n in names if names.count(n) > 1} | (set(names) & reserved)
         if dup:
             raise ValueError(f"duplicate or reserved names: {sorted(dup)}")
@@ -235,6 +308,17 @@ class Case(BaseModel):
                 raise ValueError(f"component {c.name!r} has a non-positive size")
             if any(lo[i] < 0 or hi[i] > E[i] + 1e-12 for i in range(3)):
                 raise ValueError(f"component {c.name!r} is outside the enclosure")
+        comp_names = {c.name for c in self.components}
+        for r in self.refinements:
+            if r.target not in comp_names:
+                raise ValueError(f"refinement target {r.target!r} is not a component")
+        pnames = [p.name for p in self.probes]
+        if len(set(pnames)) != len(pnames):
+            raise ValueError("duplicate probe names")
+        for pr in self.probes:
+            pt = pr.point.as_tuple()
+            if any(pt[i] < 0 or pt[i] > E[i] for i in range(3)):
+                raise ValueError(f"probe {pr.name!r} is outside the enclosure")
         if not any(o.kind == OpeningKind.inlet for o in self.openings):
             raise ValueError("the case needs at least one inlet")
         if not any(o.kind == OpeningKind.outlet for o in self.openings):
@@ -255,6 +339,23 @@ class Case(BaseModel):
     @property
     def fluid_region(self) -> str:
         return "air"
+
+    def wall_patches(self) -> dict[str, list[Face]]:
+        """Enclosure wall patch name(s) -> the faces each covers ("walls", or
+        "walls_<face>" when walls.faces overrides some faces)."""
+        if self.walls.per_face:
+            return {f"walls_{f.value}": [f] for f in Face}
+        return {"walls": list(Face)}
+
+    def probe_region(self, probe: Probe) -> str:
+        """Region holding the probe: the first component listed whose box contains it
+        (overlaps belong to the first one, as in the mesh), else the air."""
+        pt = probe.point.as_tuple()
+        for c in self.components:
+            lo, hi = c.box.min, c.box.max
+            if all(lo[i] <= pt[i] <= hi[i] for i in range(3)):
+                return c.name
+        return self.fluid_region
 
     @property
     def solid_regions(self) -> list[str]:

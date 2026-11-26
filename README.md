@@ -110,6 +110,31 @@ opening adds a porous layer two cells deep just inside it (cellZone `grille_<nam
 Darcy-Forchheimer) that drops K rho u^2 / 2; K comes from the open-area ratio (Idelchik,
 thin perforated plate). See `examples/fan_box.yaml`.
 
+## Enclosure walls
+
+Walls are adiabatic by default. `walls: {mode: exchange, material: steel, thickness: 0.001,
+h_external: 5, emissivity: 0.9}` makes heat cross them (1D conduction through the wall,
+then convection and radiation to `t_external`, default ambient), with OpenFOAM's
+`externalWallHeatFluxTemperature` on both the air and the solid side. `faces: {zmin:
+{mode: adiabatic}}` overrides single faces (the walls are then split into
+`walls_<face>` patches). `Summary.heat_through_walls_w` gives the heat they carry away,
+and the energy balance includes it.
+
+## Probes
+
+`probes: [{name: cpu_top, point: {x: 0.075, y: 0.055, z: 0.012}}]` records the
+temperature (and the air velocity, for a point in the air) every
+`solver.probe_interval` iterations, through OpenFOAM `probes` function objects (one
+per region). `probes.read_probes(case, case_dir)` returns the whole history, during the
+run or after; `Summary.probes` holds the last values.
+
+## Local mesh refinement
+
+`refinements: [{target: cpu, factor: 3, margin: 0.01}]` uses cells 3 times smaller
+(or `cell_size`) over the component, growing back to the bulk size over `margin`
+(default 3 bulk cells) with graded blockMesh segments. The grid stays structured, so
+the refinement is a slab through the whole enclosure along each axis.
+
 ## Conventions
 
 Units are SI, temperatures in °C in the case file. z is up. The enclosure spans
