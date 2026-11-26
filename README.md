@@ -120,6 +120,14 @@ then convection and radiation to `t_external`, default ambient), with OpenFOAM's
 `walls_<face>` patches). `Summary.heat_through_walls_w` gives the heat they carry away,
 and the energy balance includes it.
 
+## Probes
+
+`probes: [{name: cpu_top, point: {x: 0.075, y: 0.055, z: 0.012}}]` records the
+temperature (and the air velocity, for a point in the air) every
+`solver.probe_interval` iterations, through OpenFOAM `probes` function objects (one
+per region). `probes.read_probes(case, case_dir)` returns the whole history, during the
+run or after; `Summary.probes` holds the last values.
+
 ## Conventions
 
 Units are SI, temperatures in °C in the case file. z is up. The enclosure spans

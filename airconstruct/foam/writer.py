@@ -105,7 +105,35 @@ def _control_dict(case: Case) -> dict:
         "runTimeModifiable": True,
         # SIGUSR1 = write now and stop: used by the runner to end a phase cleanly
         "OptimisationSwitches": {"stopAtWriteNowSignal": 10},
+        **({"functions": probe_functions(case)} if case.probes else {}),
     }
+
+
+def probe_function_name(region: str) -> str:
+    return f"probes_{region}"
+
+
+def probe_functions(case: Case) -> dict:
+    """One `probes` function object per region holding probes (T everywhere, U and
+    p_rgh in the air), sampled every solver.probe_interval iterations. Output:
+    postProcessing/[<region>/]probes_<region>/<start time>/<field>."""
+    by_region: dict[str, list] = {}
+    for pr in case.probes:
+        by_region.setdefault(case.probe_region(pr), []).append(pr)
+    out = {}
+    for region, probes in by_region.items():
+        fluid = region == case.fluid_region
+        out[probe_function_name(region)] = {
+            "type": "probes",
+            "libs": "(sampling)",
+            "region": region,
+            "writeControl": "timeStep",
+            "writeInterval": case.solver.probe_interval,
+            "fields": "(T U p_rgh)" if fluid else "(T)",
+            "probeLocations": "(" + " ".join(
+                f"({p.point.x:.9g} {p.point.y:.9g} {p.point.z:.9g})" for p in probes) + ")",
+        }
+    return out
 
 
 def _fluid_schemes() -> dict:

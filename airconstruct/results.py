@@ -170,6 +170,16 @@ class FanResult:
 
 
 @dataclass
+class ProbeResult:
+    """Last sample of a probe (see probes.read_probes for the whole history)."""
+
+    name: str
+    region: str
+    t_c: float
+    speed: float  # [m/s], nan in a solid
+
+
+@dataclass
 class Summary:
     components: list[ComponentResult]
     air_t_max_c: float
@@ -192,6 +202,7 @@ class Summary:
     openings: list[OpeningResult] = field(default_factory=list)
     energy: EnergyBalance | None = None
     heat_through_walls_w: float = 0.0  # leaving through the enclosure walls (0 if adiabatic)
+    probes: list[ProbeResult] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -585,8 +596,16 @@ def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
         q_walls = energy.air_to_walls_w + sum(p.to_walls_w for p in energy.parts)
         err = (q_air + q_walls - power) / power if power > 0 else float("nan")
 
+    from .probes import read_probes
+
+    probes = []
+    for name, ser in read_probes(case, case_dir).items():
+        if not ser.t_c:
+            warnings.append(f"probe {name!r}: no sample written (outside the {ser.region} mesh?)")
+        probes.append(ProbeResult(name, ser.region, *ser.last()))
+
     return Summary(
-        fans=fans, heat_through_walls_w=q_walls,
+        probes=probes, fans=fans, heat_through_walls_w=q_walls,
         components=comps, air_t_max_c=air_t_max, air_v_max=v_max, pressure_drop_pa=dp,
         outlet_t_mean_c=t_out_c, time=t, inlet_t_mean_c=t_in_c, air_t_mean_c=air_t_mean,
         mass_flow_kg_s=mdot, mass_imbalance=imbalance, heat_to_air_w=q_air, total_power_w=power,

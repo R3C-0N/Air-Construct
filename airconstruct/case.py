@@ -244,8 +244,17 @@ class Precision(BaseModel):
     cell_size: float | None = None
 
 
+class Probe(BaseModel):
+    """A point where temperature (and air velocity, in the air) is recorded every
+    ``solver.probe_interval`` iterations: a virtual thermocouple / anemometer."""
+
+    name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    point: Vec3
+
+
 class Solver(BaseModel):
     iterations: int = 20000  # cap on total solver iterations
+    probe_interval: int = Field(default=10, ge=1)  # iterations between probe samples
     cores: int = 1
     turbulence: str = "kOmegaSST"  # or "laminar"
     gravity: bool = True
@@ -261,6 +270,7 @@ class Case(BaseModel):
     components: list[Component] = []
     openings: list[Opening] = []
     walls: Walls = Walls()
+    probes: list[Probe] = []
     precision: Precision = Precision()
     solver: Solver = Solver()
 
@@ -285,6 +295,13 @@ class Case(BaseModel):
                 raise ValueError(f"component {c.name!r} has a non-positive size")
             if any(lo[i] < 0 or hi[i] > E[i] + 1e-12 for i in range(3)):
                 raise ValueError(f"component {c.name!r} is outside the enclosure")
+        pnames = [p.name for p in self.probes]
+        if len(set(pnames)) != len(pnames):
+            raise ValueError("duplicate probe names")
+        for pr in self.probes:
+            pt = pr.point.as_tuple()
+            if any(pt[i] < 0 or pt[i] > E[i] for i in range(3)):
+                raise ValueError(f"probe {pr.name!r} is outside the enclosure")
         if not any(o.kind == OpeningKind.inlet for o in self.openings):
             raise ValueError("the case needs at least one inlet")
         if not any(o.kind == OpeningKind.outlet for o in self.openings):
@@ -312,6 +329,16 @@ class Case(BaseModel):
         if self.walls.per_face:
             return {f"walls_{f.value}": [f] for f in Face}
         return {"walls": list(Face)}
+
+    def probe_region(self, probe: Probe) -> str:
+        """Region holding the probe: the first component listed whose box contains it
+        (overlaps belong to the first one, as in the mesh), else the air."""
+        pt = probe.point.as_tuple()
+        for c in self.components:
+            lo, hi = c.box.min, c.box.max
+            if all(lo[i] <= pt[i] <= hi[i] for i in range(3)):
+                return c.name
+        return self.fluid_region
 
     @property
     def solid_regions(self) -> list[str]:
