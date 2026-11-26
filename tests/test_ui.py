@@ -333,7 +333,9 @@ def test_window_real_openfoam_run(qapp, tmp_path):
     assert wait_until(qapp, lambda: win.thread is None and win.outcome is not None, 1200)
     log = win.log.toPlainText()
     assert win.outcome.success, "\n".join(win.outcome.errors) + "\n" + log[-3000:]
-    assert "--- phase flow" in log
+    # (the log widget keeps only the last 5000 lines, so check the result, not early lines)
+    assert win.outcome.result.iterations > 0
+    assert win.progress.format().startswith(("Converged", "Finished"))
     assert win.outcome.summary is not None
     assert "air" in win.outcome.regions
     assert win.results.table.rowCount() == len(case.components)
