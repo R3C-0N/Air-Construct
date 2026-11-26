@@ -128,6 +128,13 @@ temperature (and the air velocity, for a point in the air) every
 per region). `probes.read_probes(case, case_dir)` returns the whole history, during the
 run or after; `Summary.probes` holds the last values.
 
+## Local mesh refinement
+
+`refinements: [{target: cpu, factor: 3, margin: 0.01}]` uses cells 3 times smaller
+(or `cell_size`) over the component, growing back to the bulk size over `margin`
+(default 3 bulk cells) with graded blockMesh segments. The grid stays structured, so
+the refinement is a slab through the whole enclosure along each axis.
+
 ## Conventions
 
 Units are SI, temperatures in °C in the case file. z is up. The enclosure spans

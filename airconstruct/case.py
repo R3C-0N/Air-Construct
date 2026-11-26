@@ -252,6 +252,18 @@ class Probe(BaseModel):
     point: Vec3
 
 
+class Refinement(BaseModel):
+    """Finer mesh around a component: cells of ``cell_size`` (default: bulk size /
+    ``factor``) over the component's extent, growing back to the bulk size over
+    ``margin`` (default: 3 bulk cells) around it. The mesh is a structured grid, so the
+    refinement spans the whole enclosure along each axis (a slab through the part)."""
+
+    target: str  # component name
+    factor: int = Field(default=2, ge=1, le=8)
+    cell_size: float | None = Field(default=None, gt=0.0)  # [m], overrides factor
+    margin: float | None = Field(default=None, ge=0.0)  # [m]
+
+
 class Solver(BaseModel):
     iterations: int = 20000  # cap on total solver iterations
     probe_interval: int = Field(default=10, ge=1)  # iterations between probe samples
@@ -271,6 +283,7 @@ class Case(BaseModel):
     openings: list[Opening] = []
     walls: Walls = Walls()
     probes: list[Probe] = []
+    refinements: list[Refinement] = []
     precision: Precision = Precision()
     solver: Solver = Solver()
 
@@ -295,6 +308,10 @@ class Case(BaseModel):
                 raise ValueError(f"component {c.name!r} has a non-positive size")
             if any(lo[i] < 0 or hi[i] > E[i] + 1e-12 for i in range(3)):
                 raise ValueError(f"component {c.name!r} is outside the enclosure")
+        comp_names = {c.name for c in self.components}
+        for r in self.refinements:
+            if r.target not in comp_names:
+                raise ValueError(f"refinement target {r.target!r} is not a component")
         pnames = [p.name for p in self.probes]
         if len(set(pnames)) != len(pnames):
             raise ValueError("duplicate probe names")
