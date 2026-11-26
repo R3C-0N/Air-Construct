@@ -62,7 +62,8 @@ class Summary:
     time: float = 0.0  # time (iteration for steady runs) the numbers come from
     inlet_t_mean_c: float = float("nan")
     air_t_mean_c: float = float("nan")  # volume weighted
-    mass_flow_kg_s: float = float("nan")  # through the outlets
+    mass_flow_kg_s: float = float("nan")  # through the inlets (outlets if no inlet data)
+    mass_imbalance: float = float("nan")  # (outlet - inlet) / inlet mass flow
     heat_to_air_w: float = float("nan")  # mass_flow * cp * (T_out - T_in)
     total_power_w: float = 0.0
     energy_balance_error: float = float("nan")  # (heat_to_air - power) / power
@@ -207,7 +208,8 @@ def _patch_stats(patches: dict, names: list[str], fld: str, weights: str = "area
     return _wmean(np.concatenate(vals), np.concatenate(ws))
 
 
-def _outlet_mass_flow(patches: dict, names: list[str], molw: float) -> float | None:
+def _mass_flow(patches: dict, names: list[str], molw: float) -> float | None:
+    """Mass flow [kg/s] through the given patches (magnitude, either direction)."""
     total, found = 0.0, False
     for n in names:
         poly = patches.get(n)
@@ -275,7 +277,17 @@ def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
     t_in_c = T_in - KELVIN if T_in is not None else float("nan")
 
     gas = GASES[case.fluid]
-    mdot = _outlet_mass_flow(patches, outlets, gas.mol_weight)
+    m_in = _mass_flow(patches, inlets, gas.mol_weight)
+    m_out = _mass_flow(patches, outlets, gas.mol_weight)
+    imbalance = float("nan")
+    if m_in and m_out:
+        imbalance = (m_out - m_in) / m_in
+        if abs(imbalance) > 0.02:
+            warnings.append(
+                f"mass balance off by {imbalance:+.1%}: {m_in * 1000:.3f} g/s in, "
+                f"{m_out * 1000:.3f} g/s out (the flow is not fully converged)")
+    # the imposed inlet flow is the most accurate figure, use it for the heat balance
+    mdot = m_in if m_in is not None else m_out
     mdot = mdot if mdot is not None else float("nan")
     q_air = mdot * gas.cp * (t_out_c - t_in_c)
     power = float(sum(c.power for c in case.components))
@@ -288,7 +300,7 @@ def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
     return Summary(
         components=comps, air_t_max_c=air_t_max, air_v_max=v_max, pressure_drop_pa=dp,
         outlet_t_mean_c=t_out_c, time=t, inlet_t_mean_c=t_in_c, air_t_mean_c=air_t_mean,
-        mass_flow_kg_s=mdot, heat_to_air_w=q_air, total_power_w=power,
+        mass_flow_kg_s=mdot, mass_imbalance=imbalance, heat_to_air_w=q_air, total_power_w=power,
         energy_balance_error=err, pressure_field=pfield, warnings=warnings)
 
 
@@ -517,8 +529,12 @@ def _render_3d(case: Case, regions: dict, patches: dict, out_dir: Path,
             if lines.n_points:
                 p = plotter()
                 scal = "T [°C]" if "T [°C]" in lines.point_data else None
+                clim = None
+                if scal:  # a few lines graze hot walls: don't let them flatten the scale
+                    tl = np.asarray(lines.point_data[scal])
+                    clim = (float(tl.min()), max(float(np.percentile(tl, 99)), float(tl.min()) + 1))
                 p.add_mesh(lines.tube(radius=max(E) * 0.002) if lines.n_lines else lines,
-                           scalars=scal, cmap="turbo", show_scalar_bar=bool(scal))
+                           scalars=scal, cmap="turbo", clim=clim, show_scalar_bar=bool(scal))
                 for name, s in solids:
                     p.add_mesh(_surface(s), color="lightgrey", opacity=0.6)
                 p.view_isometric()
@@ -642,7 +658,8 @@ generated {datetime.now().astimezone():%Y-%m-%d %H:%M}</p>
 <table><tr><th>Component</th><th class=n>Power [W]</th><th class=n>T max [°C]</th>
 <th class=n>T mean [°C]</th></tr>
 {rows}</table>
-<p class=sub>Mass flow through the outlets: {_fmt(s.mass_flow_kg_s * 1000, 3)} g/s.</p>
+<p class=sub>Mass flow: {_fmt(s.mass_flow_kg_s * 1000, 3)} g/s
+(outlet vs inlet: {_fmt(100 * s.mass_imbalance, 1)} %).</p>
 <h2>Fields</h2>
 {''.join(imgs) or '<p>No images.</p>'}
 </body></html>
