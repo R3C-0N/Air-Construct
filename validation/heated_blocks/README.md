@@ -26,6 +26,7 @@ report is in the job summary and in the `simulation-outputs` artifact).
 | check | reference | tolerance | why |
 |---|---|---|---|
 | outlet / inlet mass flow | 1 | ± 0.5 % | mass conservation |
+| inlet mass flow / ρ·U·A | 1 | ± 0.5 % | the inlet condition is applied as asked |
 | heat carried by the air / power | 1 | ± 2 % | energy conservation (adiabatic walls) |
 | outlet mean temperature rise | P / (ṁ·cp) = 4.13 K | ± 2 % | same, as a temperature |
 | T(block_b) − T(block_a) | 0 | ± 2 % of the block's rise | symmetry |
