@@ -13,6 +13,7 @@ Start it with ``airconstruct-gui [case.yaml]`` or ``python -m airconstruct.ui``.
 
 from __future__ import annotations
 
+import math
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -88,6 +89,16 @@ def _default_estimate(case: Case) -> float:
     return estimate_runtime_s(case)
 
 
+def _default_write_report(case: Case, case_dir: Path, out_dir: Path, summary=None) -> Path:
+    from ..results import write_report
+
+    return write_report(case, case_dir, out_dir, summary=summary)
+
+
+def _fmt(v: float) -> str:
+    return f"{v:.1f}" if math.isfinite(v) else "n/a"
+
+
 class ResultsPanel(QWidget):
     """Key numbers of a finished run."""
 
@@ -111,16 +122,27 @@ class ResultsPanel(QWidget):
         self.table.setRowCount(0)
 
     def show_summary(self, summary) -> None:
-        self.headline.setText(
+        text = (
             f"Air max {summary.air_t_max_c:.1f} °C · outlet mean {summary.outlet_t_mean_c:.1f} °C"
             f" · max velocity {summary.air_v_max:.2f} m/s"
             f" · pressure drop {summary.pressure_drop_pa:.2f} Pa"
         )
-        rows = sorted(summary.components, key=lambda c: -c.t_max_c)
+        flow = getattr(summary, "mass_flow_kg_s", float("nan"))
+        if math.isfinite(flow):
+            text += f" · air flow {flow * 1000:.2f} g/s"
+        bal = getattr(summary, "energy_balance_error", float("nan"))
+        if math.isfinite(bal):
+            text += f" · energy balance {bal * 100:+.0f} %"
+        warnings = getattr(summary, "warnings", None) or []
+        if warnings:
+            text += "\nWarnings: " + "; ".join(warnings)
+        self.headline.setText(text)
+        rows = sorted(summary.components,
+                      key=lambda c: -c.t_max_c if math.isfinite(c.t_max_c) else math.inf)
         self.table.setRowCount(len(rows))
         for r, c in enumerate(rows):
             for col, v in enumerate(
-                [c.name, f"{c.power_w:.1f}", f"{c.t_max_c:.1f}", f"{c.t_mean_c:.1f}"]
+                [c.name, _fmt(c.power_w), _fmt(c.t_max_c), _fmt(c.t_mean_c)]
             ):
                 item = QTableWidgetItem(v)
                 if col:
@@ -138,6 +160,8 @@ class MainWindow(QMainWindow):
         summarize_fn: Callable | None = None,
         load_regions_fn: Callable | None = None,
         estimate_fn: Callable[[Case], float] | None = None,
+        write_report_fn: Callable | None = None,
+        open_report: bool = True,
     ) -> None:
         super().__init__()
         self.settings = QSettings("AirConstruct", "AirConstruct")
@@ -147,6 +171,9 @@ class MainWindow(QMainWindow):
         )
         self._run_fn, self._summarize_fn, self._load_fn = run_fn, summarize_fn, load_regions_fn
         self._estimate_fn = estimate_fn or _default_estimate
+        self._write_report_fn = write_report_fn or _default_write_report
+        self._open_report = open_report
+        self.last_report: Path | None = None
         self.thread: QThread | None = None
         self.worker: RunWorker | None = None
         self.outcome: RunOutcome | None = None
@@ -454,18 +481,23 @@ class MainWindow(QMainWindow):
         if not (self.outcome and self.outcome.success and self.last_run_case):
             return
         case_dir = Path(self.outcome.result.case_dir)
+        self.status.showMessage("Writing report…")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            from ..results import write_report
-
-            path = write_report(self.last_run_case, case_dir, case_dir / "report")
+            path = self._write_report_fn(self.last_run_case, case_dir, case_dir / "report",
+                                         summary=self.outcome.summary)
         except NotImplementedError:
             QMessageBox.information(self, "Report", "HTML reports are not implemented yet.")
             return
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Report", f"Could not write the report:\n{exc}")
             return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.last_report = Path(path)
         self.status.showMessage(f"Report written to {path}")
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        if self._open_report:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def closeEvent(self, event) -> None:
         if self.thread is not None:

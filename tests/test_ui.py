@@ -203,3 +203,46 @@ def test_window_save_load(qapp, tmp_path):
     win.load_case(p)
     assert _close(win.form.to_case(), Case.load(EXAMPLE))
     win.close()
+
+
+def test_window_with_real_results_module(qapp, tmp_path):
+    """Mocked solver, real results.summarize / load_regions / write_report on a
+    synthetic OpenFOAM case written by tests/foam_fixture.py."""
+    pytest.importorskip("pyvista")
+    import numpy as np
+    from foam_fixture import write_case
+
+    case = Case.load(EXAMPLE)
+    case.components[0].box.origin.z = 0.004  # put parts on cell faces, as test_results
+    for comp in case.components[1:]:
+        comp.box.origin.z = 0.006
+    case_dir = tmp_path / "runs" / case.name
+
+    def T(x, region):
+        return np.full(len(x), 350.0 if region == "cpu" else 300.0) + x[:, 0]
+
+    def U(x):
+        u = np.zeros_like(x)
+        u[:, 0] = 1.0
+        return u
+
+    write_case(case, case_dir, (40, 24, 30), T=T, U=U,
+               p=lambda x: 101325.0 + 10.0 * (1.0 - x[:, 0] / 0.2), times=("0", "100"))
+
+    def run(case, work_dir, **kw):
+        kw["on_residual"](100, {"h": 1e-5})
+        return RunResult(case_dir=case_dir, success=True, converged=True, iterations=100,
+                         wall_time_s=3.0)
+
+    win = MainWindow(case=case, work_dir=tmp_path / "runs", run_fn=run,
+                     estimate_fn=lambda c: 1.0, open_report=False)
+    win.start_run()
+    assert wait_until(qapp, lambda: win.thread is None and win.outcome is not None, 60)
+    assert win.outcome.success, win.outcome.errors
+    assert win.results.table.item(0, 0).text() == "cpu"
+    assert float(win.results.table.item(0, 2).text()) == pytest.approx(76.9, abs=0.5)
+    assert set(win.outcome.regions) >= {"air", "cpu"}
+    assert win.field_combo.isEnabled()
+    win.save_report()
+    assert win.last_report is not None and win.last_report.exists()
+    win.close()
