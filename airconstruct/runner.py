@@ -7,9 +7,9 @@ Public interface (used by cli and ui):
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from .case import Case
 

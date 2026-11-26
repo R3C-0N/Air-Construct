@@ -87,7 +87,7 @@ class Opening(BaseModel):
     temperature: float | None = None  # inlet temperature [degC]; default ambient
 
     @model_validator(mode="after")
-    def _inlet_has_flow(self) -> "Opening":
+    def _inlet_has_flow(self) -> Opening:
         if self.kind == OpeningKind.inlet and self.flow_rate is None and self.velocity is None:
             raise ValueError(f"inlet {self.name!r} needs flow_rate or velocity")
         return self
@@ -138,7 +138,7 @@ class Case(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _check_geometry(self) -> "Case":
+    def _check_geometry(self) -> Case:
         names = [c.name for c in self.components] + [o.name for o in self.openings]
         reserved = {"air", self.fluid, "walls", "defaultFaces"}
         dup = {n for n in names if names.count(n) > 1} | (set(names) & reserved)
@@ -159,7 +159,7 @@ class Case(BaseModel):
 
     # --- persistence -------------------------------------------------------
     @classmethod
-    def load(cls, path: str | Path) -> "Case":
+    def load(cls, path: str | Path) -> Case:
         return cls.model_validate(yaml.safe_load(Path(path).read_text()))
 
     def save(self, path: str | Path) -> None:
