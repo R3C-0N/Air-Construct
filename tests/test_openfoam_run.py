@@ -1,5 +1,6 @@
 """End-to-end run of the example case. Needs OpenFOAM: pytest -m openfoam."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,8 @@ def test_example_converges():
     backend = LocalBackend()
     ok, msg = backend.available()
     if not ok:
+        if os.environ.get("AIRCONSTRUCT_REQUIRE_OPENFOAM"):
+            pytest.fail(msg)
         pytest.skip(msg)
     case = Case.load(EXAMPLE)
     case.precision.level = 1

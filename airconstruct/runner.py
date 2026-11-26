@@ -111,13 +111,15 @@ class LocalBackend(Backend):
         if not self.bashrc and not shutil.which("blockMesh"):
             return False, "OpenFOAM not found (install openfoam.com, or set AIRCONSTRUCT_FOAM_BASHRC)"
         lines: list[str] = []
+        script = 'command -v chtMultiRegionSimpleFoam >/dev/null && echo "OpenFOAM ${WM_PROJECT_VERSION:-}"'
+        probe = ["sh", "-c", script]
         try:
-            code = self.run(["foamVersion"], Path.cwd(), lines.append)
+            code = self.run(probe, Path.cwd(), lines.append)
         except OSError as e:
             return False, str(e)
-        if code != 0 and self.bashrc:
-            return True, f"OpenFOAM via {self.bashrc}"
-        return code == 0, " ".join(lines).strip() or "OpenFOAM found"
+        if code != 0:
+            return False, "OpenFOAM found but chtMultiRegionSimpleFoam is missing"
+        return True, " ".join(lines).strip() or "OpenFOAM found"
 
 
 def detect_backend() -> Backend:
