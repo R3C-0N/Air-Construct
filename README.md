@@ -47,6 +47,19 @@ sudo apt-get install -y openfoam2406-default
 Optional: `AIRCONSTRUCT_WSL_DISTRO` picks a distro other than the default one,
 `AIRCONSTRUCT_FOAM_BASHRC` points at a specific OpenFOAM `etc/bashrc`.
 
+## Download (Windows / Linux)
+
+Every push to `main` builds the desktop app in GitHub Actions
+([Build desktop app](../../actions/workflows/build.yml)): open the latest run and download
+the `Air-Construct-windows-x64` artifact (installer `...-setup.exe`, or a portable `.zip`)
+or `Air-Construct-linux-x64` (`.tar.gz`). Tagging a version `v*` attaches the same
+files to a GitHub release. The installer is per-user and needs no admin rights;
+OpenFOAM still has to be installed in WSL2 (see above).
+
+To build it yourself: `pip install ".[ui,results]" pyinstaller` then
+`pyinstaller packaging/airconstruct.spec --noconfirm`; the app is in
+`dist/Air-Construct/`, and `Air-Construct --self-test` checks that it starts.
+
 ## Quick start
 
 ```bash
