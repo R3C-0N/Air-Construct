@@ -69,6 +69,8 @@ def self_test() -> int:
         state = ph.text() if ph is not None else "3D viewport"
         report.append(f"scene view: {state}")
     win.close()
+    win.deleteLater()
+    qapp.processEvents()
 
     # the matplotlib backend used for report images must be bundled
     import matplotlib
@@ -110,5 +112,15 @@ def main() -> int:
     return gui_main([sys.argv[0], *argv])
 
 
+def _exit_now(code: int) -> None:
+    """Exit without interpreter teardown. Once the window is closed (MainWindow.closeEvent
+    releases the VTK view), destroying the remaining Qt and VTK objects in arbitrary
+    order can crash on Windows (0xC0000409), turning a clean exit into an error code."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            stream.flush()
+    os._exit(code)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    _exit_now(main())
