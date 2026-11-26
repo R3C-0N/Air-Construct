@@ -34,10 +34,20 @@ class RunOutcome:
         return bool(self.result is not None and getattr(self.result, "success", False))
 
 
-def _default_run(*args, **kwargs):
-    from ..runner import run_case
+def _default_run(case: Case, work_dir: Path, **kwargs):
+    """runner.run_case, after checking that OpenFOAM can be reached at all."""
+    from ..runner import detect_backend, run_case
 
-    return run_case(*args, **kwargs)
+    backend = detect_backend()
+    ok, msg = backend.available()
+    if not ok:
+        raise BackendUnavailable(msg)
+    kwargs.get("on_log", print)(f"Using {msg}")
+    return run_case(case, work_dir, backend=backend, **kwargs)
+
+
+class BackendUnavailable(RuntimeError):
+    """OpenFOAM (or WSL on Windows) is not installed or not found."""
 
 
 def _default_summarize(case: Case, case_dir: Path):
@@ -81,6 +91,11 @@ class RunWorker(QObject):
     def _error(self, out: RunOutcome, what: str, exc: BaseException) -> None:
         if isinstance(exc, NotImplementedError):
             msg = f"{what} is not implemented yet"
+        elif isinstance(exc, BackendUnavailable):
+            msg = f"OpenFOAM is not available: {exc}"
+            out.errors.append(msg)
+            self.log.emit(msg)
+            return
         else:
             msg = f"{what} failed: {exc}"
         out.errors.append(msg)
@@ -91,7 +106,7 @@ class RunWorker(QObject):
     def run(self) -> None:
         out = RunOutcome()
         try:
-            self.stage.emit("Solving")
+            self.stage.emit("Starting")
             self.work_dir.mkdir(parents=True, exist_ok=True)
             out.result = self.run_fn(
                 self.case,

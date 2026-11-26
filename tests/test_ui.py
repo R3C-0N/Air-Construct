@@ -23,7 +23,8 @@ from airconstruct.runner import RunResult
 from airconstruct.ui.app import MainWindow
 from airconstruct.ui.form import CaseForm, FormError, format_duration
 
-# frozen copy of the first example (the tests assert on its components)
+SHIPPED_EXAMPLE = Path(__file__).parent.parent / "examples" / "electronics_box.yaml"
+# frozen geometry (same as test_results): the expectations below depend on it
 EXAMPLE = Path(__file__).parent / "data" / "results_box.yaml"
 
 
@@ -81,6 +82,13 @@ def _close(a: Case, b: Case) -> bool:
 
 def test_form_roundtrip_values(qapp):
     case = Case.load(EXAMPLE)
+    form = CaseForm()
+    form.set_case(case)
+    assert _close(form.to_case(), case)
+
+
+def test_form_roundtrip_shipped_example(qapp):
+    case = Case.load(SHIPPED_EXAMPLE)
     form = CaseForm()
     form.set_case(case)
     assert _close(form.to_case(), case)
@@ -178,13 +186,71 @@ def test_window_run_with_mocks(qapp, tmp_path):
     win.close()
 
 
-def test_window_runner_not_implemented(qapp, tmp_path):
-    # default estimate and runner are still stubs on main: the UI must not crash
+def test_window_without_openfoam(qapp, tmp_path, monkeypatch):
+    """Default runner path: a missing OpenFOAM is reported, not crashed on."""
+    from airconstruct import runner
+
+    class NoFoam(runner.Backend):
+        def available(self):
+            return False, "OpenFOAM not found (test)"
+
+    monkeypatch.setattr(runner, "detect_backend", lambda: NoFoam())
     win = MainWindow(case=Case.load(EXAMPLE), work_dir=tmp_path)
     win.start_run()
     assert wait_until(qapp, lambda: win.thread is None and win.outcome is not None)
     assert not win.outcome.success
-    assert win.outcome.errors
+    assert win.outcome.errors == ["OpenFOAM is not available: OpenFOAM not found (test)"]
+    assert "OpenFOAM not found" in win.results.headline.text()
+    win.close()
+
+
+def test_window_default_runner_gets_backend(qapp, tmp_path, monkeypatch):
+    from airconstruct import runner
+
+    class FakeFoam(runner.Backend):
+        def available(self):
+            return True, "OpenFOAM v2406 (test)"
+
+    seen = {}
+
+    def run_case(case, work_dir, backend=None, **kw):
+        seen["backend"] = backend
+        kw["on_log"]("--- phase energy: iterations 400..7400 (frozen flow)")
+        return fake_run(case, work_dir, **kw)
+
+    monkeypatch.setattr(runner, "detect_backend", lambda: FakeFoam())
+    monkeypatch.setattr(runner, "run_case", run_case)
+    win = MainWindow(case=Case.load(EXAMPLE), work_dir=tmp_path, summarize_fn=fake_summary,
+                     load_regions_fn=lambda d: {})
+    win.start_run()
+    assert wait_until(qapp, lambda: win.thread is None and win.outcome is not None)
+    assert isinstance(seen["backend"], FakeFoam)
+    assert win.outcome.success
+    assert "Using OpenFOAM v2406 (test)" in win.log.toPlainText()
+    win.close()
+
+
+def test_quick_estimate_preview(qapp, tmp_path):
+    win = MainWindow(case=Case.load(EXAMPLE), work_dir=tmp_path, estimate_fn=lambda c: 1.0)
+    assert "Quick estimate" in win.results.headline.text()
+    assert win.results.table.rowCount() == 4
+    assert win.results.table.item(0, 0).text() == "cpu"  # 15 W: hottest
+    t_cpu = float(win.results.table.item(0, 2).text())
+    assert 25.0 < t_cpu < 300.0
+    win.close()
+
+
+def test_phase_and_progress(qapp, tmp_path):
+    win = MainWindow(case=Case.load(EXAMPLE), work_dir=tmp_path, estimate_fn=lambda c: 1.0)
+    win.last_run_case = win.current_case
+    win.progress.setRange(0, 100)
+    win._on_log("$ blockMesh")
+    assert "Meshing (blockMesh)" in win.status.currentMessage()
+    win._on_log("--- phase flow: iterations 0..400")
+    assert win.status.currentMessage() == "Solving air flow"
+    win._on_residual(150, {"Ux": 1e-3})
+    assert win.progress.maximum() == win.current_case.solver.iterations
+    assert win.progress.value() == 150
     win.close()
 
 
