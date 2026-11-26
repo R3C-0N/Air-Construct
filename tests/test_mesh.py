@@ -1,9 +1,8 @@
 import pytest
+from test_case import EXAMPLE
 
 from airconstruct.case import Case
 from airconstruct.mesh import mesh_commands, plan_mesh, write_mesh_dicts
-
-from .test_case import EXAMPLE
 
 
 @pytest.fixture

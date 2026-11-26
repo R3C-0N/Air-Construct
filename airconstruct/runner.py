@@ -324,7 +324,9 @@ def run_case(
         end = min(budget, start + max_its)
         if end <= start:
             return True
-        set_phase(frozen, end)
+        # endTime a bit past the cap: the phase always ends through write_now, so the
+        # last state is written whatever the writeInterval
+        set_phase(frozen, end + 10)
         parser.reset_window()
         requested = {"v": False}
         log(f"--- phase {name}: iterations {start}..{end}{' (frozen flow)' if frozen else ''}")
@@ -335,7 +337,7 @@ def run_case(
             if not line.startswith("ExecutionTime") or requested["v"]:
                 return
             user_stop = bool(should_stop and should_stop())
-            if user_stop or done():
+            if user_stop or done() or parser.iteration >= end:
                 stopped = stopped or user_stop
                 requested["v"] = True
                 backend.write_now()
@@ -360,7 +362,8 @@ def run_case(
         after = parser.max_temperatures()
         drift = max(abs(after[r] - before.get(r, after[r])) for r in after)
         log(f"--- buoyancy check: max temperature change {drift:.3f} K")
-        if drift < max(0.1, 0.002 * max(after.values())):
+        rise = max(after.values()) - min(t[0] for t in parser.temps.values())
+        if drift < max(0.2, 0.01 * rise):  # buoyancy moved temperatures by < 1 % of the rise
             converged = parser.flow_converged()
             break
     if cores > 1 and not step(["reconstructPar", "-allRegions", "-latestTime"], "reconstructPar"):

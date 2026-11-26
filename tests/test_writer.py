@@ -1,9 +1,9 @@
+from test_case import EXAMPLE
+
 from airconstruct.case import Case
 from airconstruct.foam.writer import write_case_setup, write_initial_fields
 from airconstruct.runner import ResidualParser
 from airconstruct.thermal_estimate import estimate_temperatures
-
-from .test_case import EXAMPLE
 
 
 def test_case_files(tmp_path):

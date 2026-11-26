@@ -29,6 +29,24 @@ case.yaml ──> mesh.py ──> foam/writer.py ──> runner.py ──> resul
 - Python 3.10+
 - OpenFOAM (openfoam.com, v2406 or newer). On Windows, install it inside WSL2 (Ubuntu).
 
+### Windows (WSL2)
+
+Air-Construct runs OpenFOAM through `wsl.exe`. Cases are copied into the Linux
+filesystem (`~/.cache/airconstruct/cases`) to avoid slow `/mnt/c` I/O, and results come
+back next to the case on the Windows side. Setup:
+
+```powershell
+wsl --install -d Ubuntu          # admin PowerShell, then reboot and open Ubuntu once
+```
+```bash
+# inside Ubuntu
+curl -s https://dl.openfoam.com/add-debian-repo.sh | sudo bash
+sudo apt-get install -y openfoam2406-default
+```
+
+Optional: `AIRCONSTRUCT_WSL_DISTRO` picks a distro other than the default one,
+`AIRCONSTRUCT_FOAM_BASHRC` points at a specific OpenFOAM `etc/bashrc`.
+
 ## Quick start
 
 ```bash

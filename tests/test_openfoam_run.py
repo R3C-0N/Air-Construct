@@ -3,11 +3,10 @@
 from pathlib import Path
 
 import pytest
+from test_case import EXAMPLE
 
 from airconstruct.case import Case
 from airconstruct.runner import LocalBackend, run_case
-
-from .test_case import EXAMPLE
 
 RUNS = Path(__file__).parent.parent / "runs"
 

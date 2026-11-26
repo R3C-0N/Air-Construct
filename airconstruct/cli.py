@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(res.errors), file=sys.stderr)
         return 1
     print(f"\nDone in {res.wall_time_s:.0f} s, {res.iterations} iterations, "
-          f"{'converged' if res.converged else 'NOT converged (iteration cap reached)'}")
+          f"{'converged' if res.converged else 'NOT fully converged (see the log)'}")
     print("Max temperature per region:")
     for region, (_, tmax) in res.region_temperatures.items():
         print(f"  {region:<16} {tmax:7.1f} degC")
