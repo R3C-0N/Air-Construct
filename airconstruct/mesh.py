@@ -221,8 +221,9 @@ def write_mesh_dicts(case: Case, case_dir: Path, plan: MeshPlan | None = None) -
         grille_actions.append(_action(z, "cellSet", "new", "boxToCell", {"box": _box(lo, hi)}))
         grille_actions.append(_action(z, "cellZoneSet", "new", "setToCellZone", {"set": z}))
     if grille_actions:
-        write_foam_dict(sysd / "topoSetDict.grilles", {"actions": _list(grille_actions)},
-                        obj="topoSetDict")
+        # topoSet -region air -dict system/X reads system/air/X (OpenFOAM v2406)
+        write_foam_dict(sysd / case.fluid_region / "topoSetDict.grilles",
+                        {"actions": _list(grille_actions)}, obj="topoSetDict")
     return plan
 
 

@@ -221,12 +221,12 @@ def write_case_setup(case: Case, case_dir: Path) -> None:
         write_foam_dict(cs / "radiationProperties", {"radiation": "off", "radiationModel": "none"})
         if comp.power > 0:
             write_foam_dict(cs / "fvOptions", _heat_source(comp))
-    grilles = _grille_sources(case, grille_depth(case, plan_mesh(case).cell_size))
-    if grilles:
-        write_foam_dict(c / "fvOptions", grilles)
         write_foam_dict(sysd / comp.name / "fvSchemes", _solid_schemes())
         write_foam_dict(sysd / comp.name / "fvSolution", _solid_solution(case))
         write_foam_dict(sysd / comp.name / "decomposeParDict", _decompose(max(1, case.solver.cores)))
+    grilles = _grille_sources(case, grille_depth(case, plan_mesh(case).cell_size))
+    if grilles:
+        write_foam_dict(c / "fvOptions", grilles)
 
 
 # --------------------------------------------------------------------------- 0/

@@ -92,7 +92,7 @@ def test_fan_and_grille_setup(tmp_path):
     depth = grille_depth(case, plan.cell_size)
     f = case.openings[1].grille.k() / depth
     assert "cellZone        grille_vent;" in fvo and f"({f:.6g} {f:.6g} {f:.6g})" in fvo
-    topo = (tmp_path / "system/topoSetDict.grilles").read_text()
+    topo = (tmp_path / "system/air/topoSetDict.grilles").read_text()
     assert "grille_fan" in topo and "grille_vent" in topo
     assert mesh_commands(case)[-1] == ["topoSet", "-region", "air", "-dict",
                                        "system/topoSetDict.grilles"]
