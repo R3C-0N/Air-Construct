@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .case import Case
 from .estimate import estimate_runtime_s, format_duration
+from .fans import estimate_flow
 from .mesh import plan_mesh
 from .thermal_estimate import estimate_temperatures
 
@@ -27,6 +28,11 @@ def _check(case: Case) -> None:
           f"on {case.solver.cores} core(s)")
     for w in plan.warnings:
         print(f"Warning: {w}")
+    est = estimate_flow(case)
+    print(f"Air flow (1D estimate): {est.flow_rate * 3600:.1f} m3/h, "
+          f"system pressure loss {est.pressure_drop:.1f} Pa")
+    for f in est.fans:
+        print(f"  fan {f.name:<12} {f.flow_rate * 3600:7.1f} m3/h at {f.pressure:6.1f} Pa")
     print("Instant estimate (lumped model, rough):")
     for name, t in estimate_temperatures(case).items():
         print(f"  {name:<16} {t:7.1f} degC")

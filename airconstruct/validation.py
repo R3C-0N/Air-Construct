@@ -51,11 +51,12 @@ class Check:
 
 
 def inlet_mass_flow(case: Case) -> float:
-    """Mass flow through the inlets [kg/s], ideal gas at ambient pressure and inlet T."""
+    """Imposed mass flow through the inlets [kg/s], ideal gas at ambient pressure and
+    inlet T. Free vents and fans with a curve have no imposed flow and count as 0."""
     gas = GASES[case.fluid]
     total = 0.0
     for o in case.openings:
-        if o.kind != OpeningKind.inlet:
+        if o.kind != OpeningKind.inlet or not o.fixed_flow:
             continue
         t = o.temperature if o.temperature is not None else case.ambient_temperature
         rho = case.ambient_pressure * gas.mol_weight * 1e-3 / (R_GAS * (t + KELVIN))
@@ -91,13 +92,15 @@ def flat_plate_h(case: Case, c: Component, u: float, t_film_c: float) -> float:
 def conservation_checks(case: Case, summary, mass_tol: float = 0.005,
                         energy_tol: float = 0.02) -> list[Check]:
     """Mass and energy balance (relative tolerances)."""
-    m_in = inlet_mass_flow(case)
     imb = getattr(summary, "mass_imbalance", float("nan"))
-    checks = [
-        Check("mass balance: outlet / inlet mass flow", 1.0 + imb, 1.0, mass_tol),
-        Check("inlet mass flow / rho U A", summary.mass_flow_kg_s / m_in, 1.0, mass_tol, "",
-              f"rho U A = {m_in * 1e3:.4f} g/s"),
-    ]
+    checks = [Check("mass balance: outlet / inlet mass flow", 1.0 + imb, 1.0, mass_tol)]
+    inlets = [o for o in case.openings if o.kind == OpeningKind.inlet]
+    if all(o.fixed_flow for o in inlets):
+        m_in = inlet_mass_flow(case)
+        checks.append(Check("inlet mass flow / rho U A", summary.mass_flow_kg_s / m_in, 1.0,
+                            mass_tol, "", f"rho U A = {m_in * 1e3:.4f} g/s"))
+    else:  # the flow rate is a result (fan curve, free vents)
+        m_in = summary.mass_flow_kg_s
     power = summary.total_power_w
     if power > 0:
         checks.append(Check("energy balance: heat to air / power", summary.heat_to_air_w / power,
