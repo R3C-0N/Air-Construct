@@ -13,6 +13,8 @@ datas = [
     # app.py looks for <bundle>/examples/electronics_box.yaml (parents[2] of ui/app.py)
     (str(ROOT / "examples"), "examples"),
     (str(ROOT / "LICENSE"), "."),
+    # Inter font of the UI theme (ui/theme.py loads <package>/ui/fonts/*.ttf)
+    (str(ROOT / "airconstruct" / "ui" / "fonts"), "airconstruct/ui/fonts"),
 ]
 datas += collect_data_files("pyvista")
 datas += collect_data_files("pyvistaqt")

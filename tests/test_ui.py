@@ -216,7 +216,7 @@ def test_window_invalid_case_disables_run(qapp, tmp_path, settings):
     assert not win.start_run()
     assert "outlet" in sim.blocked_label.text()
     assert [a.tab for a in win.alerts.alerts] == ["air"]
-    assert win.tabs["air"]._badge.text() == "1"
+    assert win.tab_badge("air") == "1" and win.tab_badge("model") == ""
     assert win.status.alerts_button.text() == "1 alerte"
     win.project.undo_stack.undo()
     assert win.project.case is not None and sim.run_button.isEnabled()
@@ -413,7 +413,7 @@ def test_units_and_shortcuts(qapp, tmp_path, settings):
     win.units.set_temperature("K")
     assert win.status.units_button.text() == "m · K ▾"
     assert win.units.fmt_temperature(25.0) == "298,1 K"
-    assert "0.2 × 0.12" in win.tabs["model"].tree._items["enclosure"].text(0)
+    assert "0.2 × 0.12" in win.tabs["model"].tree._items["enclosure"].text(1)
     rows = dict(win.status.shortcut_rows())
     assert rows["Lancer le calcul"] == "Ctrl+R"
     assert "Ctrl+Z" in rows["Annuler"]
@@ -513,3 +513,20 @@ def test_validation_alerts_mapping():
     with pytest.raises(ValidationError) as e:
         Case.model_validate(data)
     assert {x.tab for x in validation_alerts(data, e.value)} == {"air"}
+
+
+def test_theme_font_and_step_badges(qapp, tmp_path, settings):
+    from airconstruct.ui.theme import COLORS, style_sheet
+
+    win = make_window(tmp_path, settings)
+    assert qapp.font().family() == "Inter"  # bundled font loaded
+    assert COLORS["accent"] in qapp.styleSheet() == style_sheet()
+    nav = win.tab_bar
+    assert nav.currentIndex() == 0 and nav.buttons[0].isChecked()
+    win.project.edit("no outlet", lambda d: d["openings"].pop(1))
+    air = nav.buttons[1]
+    assert air.badge.isVisibleTo(win) and COLORS["error"] in air.badge.styleSheet()
+    nav.setCurrentIndex(1)  # the active step shows its badge white on blue
+    assert win.current_tab is win.tabs["air"] and "white" in air.badge.styleSheet()
+    assert win.state_label.property("tone") == "warning"  # "modifié" pill
+    win.close()

@@ -29,8 +29,9 @@ touching the same files.
 | `ui/units.py` | shell | `Units` (mm/m, °C/K) and formatting |
 | `ui/viewport.py`, `ui/view.py` | shell | the one 3D viewport, scene items, picking, highlight, camera presets |
 | `ui/run.py`, `ui/worker.py` | shell | `RunController` (start/stop/progress) around the background worker |
-| `ui/statusbar.py` | shell | alerts menu, units menu, shortcuts dialog |
-| `ui/widgets/` | shared | widgets several tabs use (`ObjectTree`); add new shared widgets here |
+| `ui/statusbar.py` | shell | status card: messages, alerts menu, units menu, shortcuts dialog |
+| `ui/theme.py`, `ui/fonts/` | shell | colours (`COLORS`), Inter font, the one style sheet |
+| `ui/widgets/` | shared | widgets several tabs use (`Card`, `ObjectTree`, `StepNav`, `ToggleSwitch`); add new shared widgets here |
 | `ui/tabs/base.py` | shell | `StepTab` base class |
 | `ui/tabs/__init__.py` | shell | `TAB_CLASSES`, the tab order |
 | `ui/tabs/model/` | thread Modèle | tab 1 |
@@ -137,6 +138,31 @@ settings only when on.
 
 **`ctx.goto_tab(key)`**, **`ctx.show_message(text)`**, **`ctx.work_dir()`**,
 **`ctx.settings`** (QSettings: prefix your keys with the tab key, e.g. `"results/cmap"`).
+
+## Look and feel (theme)
+
+The window follows the mockup's look: grey-blue ground (`#E7EAEF`), white rounded
+cards, Inter font, blue accent (`#1D4ED8`). It is set once for the whole app by
+`ui/theme.py` (`apply_theme`, called by the window). Tabs never hard-code colours or
+write their own style sheets, so every tab looks the same and the theme can change in
+one place:
+
+- Build each side panel from one or more `Card("Titre")` (`widgets/card.py`) and put
+  the content in `card.body`; a panel that is not a `Card` is wrapped in one.
+- Mark widgets with properties instead of styles: `set_prop(button, kind="primary")`
+  (blue), `kind="danger"`, `kind="flat"`; `set_prop(label, role="section")` (small
+  uppercase title such as "PLACEMENT"), `role="muted"`, `role="title"`,
+  `role="pill"` with `tone="warning" | "error" | "success" | "info"`;
+  `QToolButton` with `kind="segment"` for segmented choices.
+- When a colour is needed in code (a chart, a 3D item, a painted widget), take it from
+  `theme.COLORS` (`COLORS["accent"]`, `COLORS["error"]`, ...).
+- A new kind of control the sheet does not cover goes into `theme.style_sheet()`, not
+  into the tab.
+
+The panels sit beside the 3D view rather than floating over it as in the mockup:
+widgets drawn over a VTK OpenGL view are unreliable (they flicker or turn black on
+some Windows drivers). The ground, the cards and the gradient behind the 3D scene
+give the same look.
 
 ## Libraries to use
 

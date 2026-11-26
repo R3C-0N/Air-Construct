@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -26,7 +27,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...theme import COLORS, set_prop
 from ...view import FIELDS, result_items
+from ...widgets.card import Card
 from ..base import StepTab
 
 NO_RESULTS = "Pas encore de résultats. Lancez le calcul dans l’étape Simulation."
@@ -50,7 +53,9 @@ class ResultsPanel(QWidget):
         self.table.setHorizontalHeaderLabels(["Pièce", "Puissance (W)", "T max (°C)",
                                               "T moy. (°C)"])
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setShowGrid(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.table)
 
@@ -105,19 +110,24 @@ class StaleBanner(QFrame):
     def __init__(self, on_rerun, on_dismiss, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("staleBanner")
-        self.setStyleSheet("#staleBanner { background: #FEF3C7; border: 1px solid #F59E0B;"
-                           " border-radius: 4px; }")
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 4, 8, 4)
+        self.setStyleSheet(f"#staleBanner {{ background: {COLORS['warning_soft']};"
+                           f" border: 1px solid {COLORS['warning']}; border-radius: 10px; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(6)
         self.label = QLabel("Résultats obtenus avec une version précédente du modèle.")
         self.label.setWordWrap(True)
-        lay.addWidget(self.label, 1)
+        lay.addWidget(self.label)
         self.rerun_button = QPushButton("Relancer")
+        set_prop(self.rerun_button, kind="primary")
         self.rerun_button.clicked.connect(on_rerun)
         self.dismiss_button = QPushButton("Voir quand même")
         self.dismiss_button.clicked.connect(on_dismiss)
-        lay.addWidget(self.rerun_button)
-        lay.addWidget(self.dismiss_button)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.rerun_button)
+        buttons.addWidget(self.dismiss_button)
+        buttons.addStretch(1)
+        lay.addLayout(buttons)
 
 
 class ResultsTab(StepTab):
@@ -137,10 +147,8 @@ class ResultsTab(StepTab):
         self.report_button.setEnabled(False)
         self.report_button.clicked.connect(self.save_report)
 
-        self._right = QWidget()
-        rl = QVBoxLayout(self._right)
-        rl.setContentsMargins(4, 4, 4, 4)
-        rl.addWidget(QLabel("<b>Synthèse</b>"))
+        self._right = Card("Synthèse")
+        rl = self._right.body
         rl.addWidget(self.banner)
         rl.addWidget(self.results, 1)
         rl.addWidget(self.report_button)
