@@ -57,7 +57,9 @@ def fmt_entries(d: dict, indent: int = 0) -> str:
         elif v is None:
             out.append(f"{pad}{_key(k)};\n")
         else:
-            out.append(f"{pad}{_key(k):<16}{fmt_value(v, indent)};\n")
+            key = _key(k)  # keys of 16+ characters still need a space before the value
+            out.append(f"{pad}{key:<15} {fmt_value(v, indent)};\n" if len(key) >= 16
+                       else f"{pad}{key:<16}{fmt_value(v, indent)};\n")
     return "".join(out)
 
 
