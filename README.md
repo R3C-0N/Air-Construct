@@ -91,6 +91,29 @@ Phases end cleanly through SIGUSR1 (`-opt-switch stopAtWriteNowSignal=10`).
 Precision levels 1 to 5 set the mesh; `airconstruct check` prints the cell count and a
 run time estimate (`estimate.py`).
 
+## Run control and live results
+
+- **Live monitors**: OpenFOAM function objects (`foam/monitors.py`) print, every
+  iteration, the mean temperature of each region, the heat each part gives to the air
+  and the flow, temperature and pressure of each opening. `monitor.RunMonitor` turns
+  them, with the residuals of every field in every region and the solver's min/max
+  temperatures, into one `Progress` snapshot per iteration (`run_case(on_progress=...)`,
+  also appended to `<case>/monitor.jsonl` for charts after the fact).
+- **Energy balance and pressure drop**: `results.summarize` gives where each part's
+  heat goes (air, other parts, walls, openings; `Summary.energy.to_sankey()`) and the
+  static and total pressure drop with the flow through each opening.
+- **Stop and resume**: a stopped run (or one out of iterations) continues from its last
+  iteration: `airconstruct resume runs/<case> [--iterations N]` or
+  `runner.resume_case`. Its state is in `<case>/run.json`.
+- **Queue and history**: `runs.RunStore` keeps every run in its own directory with a
+  row in `runs/history.sqlite`; `runs.RunQueue` runs queued cases one after the other in
+  the background; `runs.compare` lists what changed between two runs (case and
+  results). CLI: `airconstruct queue add a.yaml b.yaml`, `airconstruct queue run`,
+  `airconstruct history`, `airconstruct compare ID1 ID2`.
+- **Diagnosis**: when a run fails or does not converge, `RunResult.diagnosis`
+  (`diagnose.py`) names the usual cause (divergence, temperature runaway, heated part
+  with no path to the air, mesh failure, disk full...) and the part involved.
+
 ## Conventions
 
 Units are SI, temperatures in °C in the case file. z is up. The enclosure spans

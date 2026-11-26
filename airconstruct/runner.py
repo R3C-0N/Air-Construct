@@ -43,6 +43,8 @@ class RunResult:
     # last live snapshot (monitor.Progress): residuals per region and field, min/mean/max
     # temperature per region, heat to the air per part, flow through the openings
     progress: object | None = None
+    stopped: bool = False  # ended by should_stop(): can be resumed (resume_case)
+    diagnosis: list = field(default_factory=list)  # diagnose.Diagnosis, when it went wrong
 
 
 class Backend:
@@ -245,6 +247,8 @@ def run_case(
     should_stop: Callable[[], bool] | None = None,
     on_progress: Callable | None = None,
     monitors: bool = True,
+    resume: bool = False,
+    case_dir: Path | None = None,
 ) -> RunResult:
     """Full pipeline in work_dir/<case.name>. Returns when the solver ends.
 
@@ -262,6 +266,12 @@ def run_case(
     heat each part gives to the air and the flow through the openings (OpenFOAM
     function objects, see foam/monitors.py); the same snapshots are appended to
     <case_dir>/monitor.jsonl. monitors=False leaves the function objects out.
+
+    case_dir overrides work_dir/<case.name>. resume=True continues the run already in
+    case_dir from its latest written iteration (after a stop, a crash or to give it more
+    iterations: raise case.solver.iterations) instead of starting over; only solver
+    settings may differ from the case it was started with. The state of the run
+    (running, stopped, converged...) is kept in <case_dir>/run.json, see read_state.
     """
     from .foam.monitors import write_monitors
     from .foam.writer import SOLVER_APP, write_case_setup, write_initial_fields
@@ -269,16 +279,38 @@ def run_case(
     from .monitor import RunMonitor
 
     backend = backend or detect_backend()
-    case_dir = Path(work_dir) / case.name
-    if case_dir.exists():
-        shutil.rmtree(case_dir)
-    case_dir.mkdir(parents=True)
-    case.save(case_dir / "case.yaml")
+    case_dir = Path(case_dir) if case_dir is not None else Path(work_dir) / case.name
     t0 = time.time()
     errors: list[str] = []
     log_lines: list[str] = []
     parser = ResidualParser(on_residual, tol=case.solver.convergence_tol * 10)
+    state = {"status": "running", "started_at": _now(), "resumes": 0, "wall_time_s": 0.0}
+    start_it = 0
+    if resume:
+        problem = resume_problem(case, case_dir)
+        if problem:
+            return RunResult(case_dir, False, False, 0, 0.0, [f"cannot resume: {problem}"])
+        previous = read_state(case_dir)
+        state.update({k: previous[k] for k in ("started_at", "resumes", "wall_time_s")
+                      if k in previous})
+        state["resumes"] += 1
+        start_it = latest_iteration(case_dir)
+    else:
+        if case_dir.exists():
+            shutil.rmtree(case_dir)
+        case_dir.mkdir(parents=True)
+    case.save(case_dir / "case.yaml")
+    parser.iteration = start_it
     monitor = RunMonitor(case, on_progress, case_dir / "monitor.jsonl")
+    monitor.iteration = start_it
+    wall0 = state["wall_time_s"]
+
+    def save_state(**kw) -> None:
+        state.update(kw, iteration=parser.iteration, updated_at=_now(),
+                     wall_time_s=wall0 + time.time() - t0)
+        write_state(case_dir, state)
+
+    save_state()
 
     def log(line: str) -> None:
         log_lines.append(line)
@@ -288,8 +320,19 @@ def run_case(
             on_log(line)
 
     def result(ok: bool, converged: bool = False) -> RunResult:
-        return RunResult(case_dir, ok, converged, parser.iteration, time.time() - t0, errors,
-                         parser.temperatures_c(), monitor.last)
+        status = ("failed" if not ok else "converged" if converged
+                  else "stopped" if stopped else "finished")
+        save_state(status=status)
+        res = RunResult(case_dir, ok, converged, parser.iteration, time.time() - t0, errors,
+                        parser.temperatures_c(), monitor.last, stopped and ok)
+        if status != "converged":
+            try:
+                from .diagnose import diagnose
+
+                res.diagnosis = diagnose(case, case_dir, res)
+            except Exception as e:  # noqa: BLE001 (a diagnosis must never hide the result)
+                log(f"(diagnosis failed: {e})")
+        return res
 
     def step(argv: list[str], logname: str, on_line_extra: Callable[[str], None] | None = None,
              mode: str = "w") -> bool:
@@ -317,18 +360,27 @@ def run_case(
             errors.append(f"{' '.join(argv)} failed (exit {code})\n{tail}")
         return code == 0
 
+    stopped = False
     write_case_setup(case, case_dir)
     write_monitors(case, case_dir, monitors)
-    write_mesh_dicts(case, case_dir)
-    for argv in mesh_commands(case):
-        name = argv[0] + ("." + argv[-1].split(".")[-1] if argv[0] == "topoSet" else "")
-        if not step(argv, name):
-            return result(False)
-    write_initial_fields(case, case_dir)
+    if resume:
+        log(f"--- resuming from iteration {start_it}")
+    else:
+        write_mesh_dicts(case, case_dir)
+        for argv in mesh_commands(case):
+            name = argv[0] + ("." + argv[-1].split(".")[-1] if argv[0] == "topoSet" else "")
+            if not step(argv, name):
+                return result(False)
+        write_initial_fields(case, case_dir)
+        from .diagnose import check_case, check_mesh
+
+        for d in check_case(case) + check_mesh(case, case_dir):
+            log(f"--- {d.severity}: {d.message}")
 
     cores = max(1, case.solver.cores)
     if cores > 1:
-        if not step(["decomposePar", "-allRegions", "-force"], "decomposePar"):
+        decompose = ["decomposePar", "-allRegions", "-force"] + (["-latestTime"] if resume else [])
+        if not step(decompose, "decomposePar"):
             return result(False)
         solve = ["mpirun", "--oversubscribe", "-np", str(cores), SOLVER_APP, "-parallel"]
     else:
@@ -339,7 +391,6 @@ def run_case(
     control = case_dir / "system" / "controlDict"
     fv_air = case_dir / "system" / case.fluid_region / "fvSolution"
     budget = case.solver.iterations
-    stopped = False
     monitor_state = {"on": monitors}
 
     def set_phase(frozen: bool, end: int) -> None:
@@ -366,6 +417,7 @@ def run_case(
         requested = {"v": False}
         log(f"--- phase {name}: iterations {start}..{end}{' (frozen flow)' if frozen else ''}")
         monitor.phase = name
+        save_state(phase=name)
 
         def watch(line: str) -> None:
             nonlocal stopped
@@ -412,6 +464,8 @@ def run_case(
         before = parser.max_temperatures()
         if not run_phase("check", False, 200, lambda: False):
             return result(False)
+        if stopped:  # a check cut short says nothing about convergence
+            break
         after = parser.max_temperatures()
         drift = max(abs(after[r] - before.get(r, after[r])) for r in after)
         log(f"--- buoyancy check: max temperature change {drift:.3f} K")
@@ -424,3 +478,81 @@ def run_case(
     if converged:
         log(f"Converged after {parser.iteration} iterations")
     return result(True, converged)
+
+
+# --------------------------------------------------------------------------- run state
+
+STATE_FILE = "run.json"
+
+
+def _now() -> str:
+    from datetime import datetime
+
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def write_state(case_dir: Path, state: dict) -> None:
+    import json
+
+    path = Path(case_dir) / STATE_FILE
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2))
+    tmp.replace(path)
+
+
+def read_state(case_dir: Path) -> dict:
+    """The run's state: {"status": "running" | "stopped" | "converged" | "finished" |
+    "failed", "iteration", "phase", "started_at", "updated_at", "wall_time_s",
+    "resumes"}. {} when the directory holds no run."""
+    import json
+
+    try:
+        return json.loads((Path(case_dir) / STATE_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def latest_iteration(case_dir: Path) -> int:
+    """Latest iteration written (reconstructed, else in processor0); 0 if none."""
+    best = 0
+    for base in (Path(case_dir), Path(case_dir) / "processor0"):
+        if not base.is_dir():
+            continue
+        for d in base.iterdir():
+            try:
+                v = float(d.name)
+            except ValueError:
+                continue
+            if d.is_dir() and v > best and any(d.iterdir()):
+                best = v
+    return int(best)
+
+
+def resume_problem(case: Case, case_dir: Path) -> str | None:
+    """Why the run in case_dir cannot be resumed with `case` (None if it can)."""
+    case_dir = Path(case_dir)
+    saved = case_dir / "case.yaml"
+    if not saved.exists() or not (case_dir / "constant" / case.fluid_region / "polyMesh").is_dir():
+        return f"no meshed run in {case_dir}"
+    if latest_iteration(case_dir) <= 0:
+        return "no iteration was written yet, start it again"
+    old = Case.load(saved).model_dump(mode="json", exclude={"solver"})
+    new = case.model_dump(mode="json", exclude={"solver"})
+    if old != new:
+        changed = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+        return ("the case changed since the run started (" + ", ".join(changed)
+                + "): only solver settings can change when resuming")
+    if read_state(case_dir).get("status") == "converged" and case.solver.iterations <= \
+            latest_iteration(case_dir):
+        return "the run already converged"
+    return None
+
+
+def resume_case(case_dir: Path, backend: Backend | None = None, case: Case | None = None,
+                **kwargs) -> RunResult:
+    """Continue the run in case_dir (stopped, crashed, or out of iterations). `case`
+    defaults to the saved case.yaml; pass it to change solver settings, e.g. more
+    iterations."""
+    case_dir = Path(case_dir)
+    case = case if case is not None else Case.load(case_dir / "case.yaml")
+    return run_case(case, case_dir.parent, backend, resume=True, case_dir=case_dir, **kwargs)
