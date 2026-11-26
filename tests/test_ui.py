@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import os
 import time
 from pathlib import Path
@@ -13,6 +14,7 @@ os.environ["AIRCONSTRUCT_NO_3D"] = "1"
 
 pytest.importorskip("PySide6.QtWidgets", exc_type=ImportError)
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
 from airconstruct.case import Case
@@ -25,8 +27,21 @@ EXAMPLE = Path(__file__).parent.parent / "examples" / "electronics_box.yaml"
 
 
 @pytest.fixture(scope="module")
-def qapp():
+def _app():
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture
+def qapp(_app):
+    """Destroy every widget a test created while the QApplication is still alive:
+    widgets left to Python's garbage collector at interpreter exit can segfault."""
+    yield _app
+    for w in QApplication.topLevelWidgets():
+        w.close()
+        w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    _app.processEvents()
+    gc.collect()
 
 
 def wait_until(qapp, cond, timeout=10.0):
@@ -92,7 +107,7 @@ def test_form_add_rows_and_precision(qapp):
     assert c.precision.level == 5
 
 
-def test_geometry_items():
+def test_geometry_items(qapp):
     pytest.importorskip("pyvista")
     from airconstruct.ui.view import geometry_items, opening_bounds
 
@@ -106,7 +121,7 @@ def test_geometry_items():
     assert b[2] == pytest.approx(0.02) and b[3] == pytest.approx(0.10)
 
 
-def test_result_items():
+def test_result_items(qapp):
     pv = pytest.importorskip("pyvista")
     import numpy as np
 
