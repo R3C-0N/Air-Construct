@@ -23,6 +23,9 @@ dev = ["pytest>=7", "ruff>=0.4"]
 [project.scripts]
 airconstruct = "airconstruct.cli:main"
 
+[project.gui-scripts]
+airconstruct-gui = "airconstruct.ui.app:main"
+
 [tool.setuptools.packages.find]
 include = ["airconstruct*"]
 
