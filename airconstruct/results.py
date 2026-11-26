@@ -207,6 +207,72 @@ def _patch_stats(patches: dict, names: list[str], fld: str, weights: str = "area
     return _wmean(np.concatenate(vals), np.concatenate(ws))
 
 
+def _time_dir(case_dir: Path, region: str, t: float) -> Path | None:
+    best, err = None, float("inf")
+    for d in Path(case_dir).iterdir():
+        try:
+            v = float(d.name)
+        except ValueError:
+            continue
+        if (d / region).is_dir() and abs(v - t) < err:
+            best, err = d / region, abs(v - t)
+    return best
+
+
+_NUM = r"[-+0-9.eE]+"
+
+
+def _patch_values(field_file: Path, patch: str) -> np.ndarray | float | None:
+    """Face values of `patch` in an ASCII OpenFOAM field file: an array for a nonuniform
+    `value`, a float for a uniform scalar one, None when not found."""
+    import re
+
+    try:
+        txt = field_file.read_text(errors="replace")
+    except OSError:
+        return None
+    m = re.search(r"\n\s*" + re.escape(patch) + r"\s*\n\s*\{", txt)
+    if not m:
+        return None
+    depth, i = 0, m.end() - 1
+    for j in range(i, len(txt)):
+        depth += {"{": 1, "}": -1}.get(txt[j], 0)
+        if depth == 0:
+            body = txt[i:j]
+            break
+    else:
+        return None
+    v = re.search(r"\bvalue\s+nonuniform\s+List<scalar>\s*(\d+)\s*\((.*?)\)\s*;", body, re.DOTALL)
+    if v:
+        arr = np.array(v.group(2).split(), dtype=float)
+        return arr if len(arr) == int(v.group(1)) else None
+    v = re.search(r"\bvalue\s+uniform\s+(" + _NUM + r")\s*;", body)
+    return float(v.group(1)) if v else None
+
+
+def _flux_stats(case_dir: Path, t: float, names: list[str], region: str = "air"):
+    """(mass flow [kg/s], flux-weighted T [K]) through the given patches, from the
+    solver's face mass fluxes (phi) and face temperatures. Exact, unlike values
+    rebuilt from the boundary velocity. None when phi is not available."""
+    d = _time_dir(case_dir, region, t)
+    if d is None:
+        return None
+    mdot, ht = 0.0, 0.0
+    for n in names:
+        phi = _patch_values(d / "phi", n)
+        T = _patch_values(d / "T", n)
+        if not isinstance(phi, np.ndarray) or T is None:
+            return None
+        T = np.full(len(phi), T) if isinstance(T, float) else T
+        if len(T) != len(phi):
+            return None
+        mdot += float(np.sum(phi))
+        ht += float(np.sum(phi * T))
+    if not names or mdot == 0:
+        return None
+    return abs(mdot), ht / mdot
+
+
 def _outlet_mass_flow(patches: dict, names: list[str], molw: float) -> float | None:
     total, found = 0.0, False
     for n in names:
@@ -277,6 +343,13 @@ def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
     gas = GASES[case.fluid]
     mdot = _outlet_mass_flow(patches, outlets, gas.mol_weight)
     mdot = mdot if mdot is not None else float("nan")
+    # prefer the solver's own face fluxes: the boundary velocity of an outlet is not
+    # the face flux (tangential and back-flow parts), which skewed both numbers
+    f_out = _flux_stats(case_dir, t, outlets)
+    f_in = _flux_stats(case_dir, t, inlets)
+    if f_out is not None and f_in is not None:
+        mdot = f_out[0]
+        t_out_c, t_in_c = f_out[1] - KELVIN, f_in[1] - KELVIN
     q_air = mdot * gas.cp * (t_out_c - t_in_c)
     power = float(sum(c.power for c in case.components))
     err = (q_air - power) / power if power > 0 else float("nan")

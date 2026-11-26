@@ -1,0 +1,39 @@
+# Validation case: three heated aluminium blocks on the floor of a flat channel.
+# See validation/heated_blocks/README.md for the checks and the reference values.
+#
+#   y ^          +----+  B (mirror of A)
+#     |
+#     |          +----+  A            +----+  C (downstream of A)
+#     +-------------------------------------------> x (flow, 0.3 m/s)
+#
+# Laminar steady flow (Re = 400 on the channel height), adiabatic channel walls, 1 W per block.
+name: heated_blocks
+enclosure: {x: 0.30, y: 0.10, z: 0.02}
+ambient_temperature: 20.0
+components:
+  - name: block_a
+    material: aluminium
+    power: 1.0
+    box: {origin: {x: 0.06, y: 0.02, z: 0.0}, size: {x: 0.02, y: 0.02, z: 0.01}}
+  - name: block_b
+    material: aluminium
+    power: 1.0
+    box: {origin: {x: 0.06, y: 0.06, z: 0.0}, size: {x: 0.02, y: 0.02, z: 0.01}}
+  - name: block_c
+    material: aluminium
+    power: 1.0
+    box: {origin: {x: 0.16, y: 0.02, z: 0.0}, size: {x: 0.02, y: 0.02, z: 0.01}}
+openings:
+  - name: inlet
+    kind: inlet
+    face: xmin
+    center: [0.05, 0.01]
+    size: [0.10, 0.02]
+    velocity: 0.3
+  - name: outlet
+    kind: outlet
+    face: xmax
+    center: [0.05, 0.01]
+    size: [0.10, 0.02]
+precision: {level: 3, cell_size: 0.0025}
+solver: {cores: 1, turbulence: laminar}

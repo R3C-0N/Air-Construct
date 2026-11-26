@@ -46,6 +46,10 @@ jobs:
         run: |
           source /usr/lib/openfoam/openfoam2406/etc/bashrc || true
           AIRCONSTRUCT_REQUIRE_OPENFOAM=1 pytest -q -rs -m openfoam
+      - name: Validation report
+        if: always()
+        shell: bash
+        run: cat runs/*/validation.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
       - name: Upload simulation outputs
         if: always()
         uses: actions/upload-artifact@v4
