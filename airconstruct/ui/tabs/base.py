@@ -70,6 +70,10 @@ class StepTab(QObject):
     def deactivated(self) -> None:
         """Another tab was opened."""
 
+    def closing(self) -> None:
+        """The window closes: stop timers, release what must go before the widgets
+        (e.g. pyqtgraph scenes). May be called more than once."""
+
 
 def placeholder(text: str, title: str | None = "À venir") -> QWidget:
     """A card saying what will come here."""

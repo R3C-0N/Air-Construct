@@ -34,6 +34,7 @@ class SceneItem:
     scalars: str | None = None
     kwargs: dict = field(default_factory=dict)
     key: str | None = None  # selection key (selection.py) of the object it shows
+    label: str | None = None  # text drawn next to the item (e.g. "cpu · 68 °C")
 
 
 def opening_bounds(case: Case, opening) -> tuple[float, float, float, float, float, float]:
@@ -210,6 +211,16 @@ class SceneView(QWidget):
             else:
                 kw["color"] = it.color
             p.add_mesh(it.mesh, style=it.style, opacity=it.opacity, name=it.name, **kw)
+        labelled = [it for it in items if it.label]
+        if labelled:
+            import numpy as np
+
+            b = [it.mesh.bounds for it in labelled]
+            pts = np.array([((x0 + x1) / 2, (y0 + y1) / 2, z1) for x0, x1, y0, y1, _z0, z1 in b])
+            p.add_point_labels(pts, [it.label for it in labelled], name="labels",
+                               font_size=12, show_points=False, shape_opacity=0.9,
+                               shape_color="white", text_color="#111827",
+                               always_visible=True, pickable=False, reset_camera=False)
         p.add_axes()
         if first or reset_camera:
             p.view_isometric()

@@ -31,11 +31,12 @@ def wait_until(qapp, cond, timeout=10.0):
     return False
 
 
-def fake_run(case, work_dir, backend=None, on_log=None, on_residual=None, should_stop=None):
+def fake_run(case, work_dir, backend=None, on_log=None, on_residual=None, should_stop=None,
+             case_dir=None, **_kw):
     on_log("fake solver start")
     for i in range(1, 6):
         on_residual(i, {"Ux": 10.0 ** -i, "h": 0.5 * 10.0 ** -i})
-    case_dir = Path(work_dir) / case.name
+    case_dir = Path(case_dir) if case_dir else Path(work_dir) / case.name
     case_dir.mkdir(parents=True, exist_ok=True)
     return RunResult(case_dir=case_dir, success=True, converged=True, iterations=5,
                      wall_time_s=1.0)
