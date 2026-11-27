@@ -4,7 +4,9 @@ Owned by: thread "Modèle" (see docs/ui-architecture.md).
 
 Left: the model tree (groups, hidden and locked parts) and the parts library.
 Middle: the shared 3D view with move / resize handles (snapped to a grid, Alt = free)
-and this tab's toolbar. Right: the inspector of the selected parts (several at once)
+and this tab's toolbar. A part can also be dragged with the mouse: press on it and
+move, it slides on the plane facing the camera (Shift: up and down), snapped to the
+grid and stuck to the neighbour or wall it nearly touches (Alt: free). Right: the inspector of the selected parts (several at once)
 and the live model checks (overlaps, parts out of the box).
 
 Every change is one undoable project edit; the operations themselves are plain
@@ -36,6 +38,7 @@ from ...alerts import Alert
 from ...selection import component_key, parse_key
 from ...theme import COLORS, set_prop
 from ...view import PASSIVE_COLORS, SceneItem, _heat_color, geometry_items
+from ...viewport import Drag
 from ...widgets.card import Card
 from ..base import StepTab
 from . import geometry as geo
@@ -401,6 +404,47 @@ class ModelTab(StepTab):
             label = f"Déplacer {targets[0]}" if len(targets) == 1 else "Déplacer la sélection"
             self.edit(label, move)
         self._update_handles()  # put the handles back on the data
+
+    # ------------------------------------------------------------------ mouse drag
+    def drag(self, key: str, point: tuple) -> Drag | None:
+        """Press on a part in the 3D view: drag it (with the other selected parts
+        when it is selected, and their groups). Locked parts and the enclosure let
+        the camera turn instead."""
+        kind, name = parse_key(key)
+        if kind != "component" or self.ctx.runner.running or self.ctx.project.locked:
+            return None
+        data = self.ctx.project.get() or {}
+        locked = set(geo.read_meta(data)["locked"])
+        if name in locked or geo.comp(data, name) is None:
+            return None
+        targets = self.handle_targets() if name in self.parts else [name]
+        members = [m for m in geo.with_groups(data, targets) if m not in locked]
+        self.handles.show(None)  # put back when the drag ends
+        return Drag(keys=[component_key(m) for m in members],
+                    constrain=lambda d, free: tuple(self.drag_delta(targets, d, free)),
+                    finish=lambda d, free: self.drag_finish(name, targets, d, free),
+                    cancel=self._update_handles)
+
+    def drag_delta(self, targets: list[str], raw, free: bool = False) -> list[float]:
+        """The move of a mouse drag: whole grid steps, then stuck to a neighbour or a
+        wall within reach (:func:`geometry.magnet`); exactly the mouse with Alt."""
+        if free:
+            return [float(v) for v in raw]
+        data = self.ctx.project.get() or {}
+        d = [0.0 if abs(v) < 1e-7 else geo.snap(v, self.snap) for v in raw]
+        return geo.magnet(data, targets, d, geo.magnet_tolerance(data))
+
+    def drag_finish(self, name: str, targets: list[str], raw, free: bool = False) -> bool:
+        """Mouse released: one undoable move. True if the parts moved."""
+        delta = self.drag_delta(targets, raw, free)
+        moved = []
+        if any(abs(v) > geo.EPS for v in delta):
+            label = f"Déplacer {targets[0]}" if len(targets) == 1 else "Déplacer la sélection"
+            moved = self.edit(label, lambda d: geo.move(d, targets, delta)) or []
+        if moved and name not in self.parts:
+            self.ctx.selection.set([component_key(name)])
+        self._update_handles()
+        return bool(moved)
 
     # ------------------------------------------------------------------ operations
     def add_preset(self, kind: str) -> str | None:

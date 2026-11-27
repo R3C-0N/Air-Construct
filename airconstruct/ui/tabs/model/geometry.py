@@ -196,6 +196,51 @@ def move(data: dict, part_names: Iterable[str], delta: Iterable[float],
     return out
 
 
+def magnet_tolerance(data: dict) -> float:
+    """How close (metres) a dragged face must come to another face to stick to it:
+    1.5 % of the largest enclosure side, between 1 and 8 mm."""
+    return min(0.008, max(0.001, 0.015 * max(enclosure(data) + [0.0])))
+
+
+def magnet(data: dict, part_names: Iterable[str], delta: Iterable[float],
+           tol: float) -> list[float]:
+    """Adjust a drag ``delta`` so the moved box sticks to what it nearly touches.
+
+    Along each dragged axis (non-zero component), when a face of the moved parts'
+    box (with their groups) ends within ``tol`` of a wall of the enclosure or of a
+    face of another part beside it (their boxes overlap, or nearly, on the two
+    other axes), the move is changed to put the faces exactly together: a part
+    slid against a neighbour or a wall touches it, on a part flush with its edge.
+    """
+    d = [float(v) for v in delta]
+    moving = set(with_groups(data, part_names))
+    box = bbox(data, moving)
+    if box is None:
+        return d
+    lo = [box[0][i] + d[i] for i in range(3)]
+    hi = [box[1][i] + d[i] for i in range(3)]
+    E = enclosure(data)
+    others = [lo_hi(c) for c in components(data) if str(c.get("name")) not in moving]
+    out = list(d)
+    for i in range(3):
+        if abs(d[i]) < EPS:
+            continue
+        rest = [j for j in range(3) if j != i]
+        targets = [0.0, E[i]]
+        for olo, ohi in others:
+            if all(olo[j] < hi[j] + tol and ohi[j] > lo[j] - tol for j in rest):
+                targets += [olo[i], ohi[i]]
+        best = None
+        for edge in (lo[i], hi[i]):
+            for t in targets:
+                gap = t - edge
+                if abs(gap) <= tol and (best is None or abs(gap) < abs(best)):
+                    best = gap
+        if best is not None:
+            out[i] = d[i] + best
+    return out
+
+
 def set_position(data: dict, part_names: list[str], axis: int, value: float) -> None:
     """Put the min corner of the parts' bounding box at ``value`` along ``axis``
     (the parts and their groups move together)."""
