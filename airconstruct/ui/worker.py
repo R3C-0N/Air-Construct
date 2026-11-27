@@ -28,10 +28,17 @@ class RunOutcome:
     regions: dict = field(default_factory=dict)  # {region: pyvista grid}
     errors: list[str] = field(default_factory=list)
     stopped: bool = False
+    backend_missing: str | None = None  # why OpenFOAM (or WSL) could not be reached
+    resumed: bool = False  # this run continued an earlier, stopped one
 
     @property
     def success(self) -> bool:
         return bool(self.result is not None and getattr(self.result, "success", False))
+
+    @property
+    def diagnosis(self) -> list:
+        """diagnose.Diagnosis items of the run (why it failed or did not converge)."""
+        return list(getattr(self.result, "diagnosis", None) or [])
 
 
 def _default_run(case: Case, work_dir: Path, **kwargs):
@@ -65,6 +72,7 @@ def _default_load_regions(case_dir: Path) -> dict:
 class RunWorker(QObject):
     log = Signal(str)
     residual = Signal(int, dict)
+    snapshot = Signal(object)  # monitor.Progress, once per iteration
     stage = Signal(str)
     finished = Signal(object)  # RunOutcome
 
@@ -75,10 +83,14 @@ class RunWorker(QObject):
         run_fn: Callable | None = None,
         summarize_fn: Callable | None = None,
         load_regions_fn: Callable | None = None,
+        case_dir: Path | None = None,
+        resume: bool = False,
     ) -> None:
         super().__init__()
         self.case = case
         self.work_dir = Path(work_dir)
+        self.case_dir = Path(case_dir) if case_dir is not None else None
+        self.resume = resume
         self.run_fn = run_fn or _default_run
         self.summarize_fn = summarize_fn or _default_summarize
         self.load_regions_fn = load_regions_fn or _default_load_regions
@@ -93,6 +105,7 @@ class RunWorker(QObject):
             msg = f"{what} is not implemented yet"
         elif isinstance(exc, BackendUnavailable):
             msg = f"OpenFOAM is not available: {exc}"
+            out.backend_missing = str(exc)
             out.errors.append(msg)
             self.log.emit(msg)
             return
@@ -108,13 +121,18 @@ class RunWorker(QObject):
         try:
             self.stage.emit("Starting")
             self.work_dir.mkdir(parents=True, exist_ok=True)
-            out.result = self.run_fn(
-                self.case,
-                self.work_dir,
-                on_log=self.log.emit,
-                on_residual=lambda it, res: self.residual.emit(int(it), dict(res)),
-                should_stop=lambda: self._stop,
-            )
+            kwargs = {
+                "on_log": self.log.emit,
+                "on_residual": lambda it, res: self.residual.emit(int(it), dict(res)),
+                "should_stop": lambda: self._stop,
+                "on_progress": self.snapshot.emit,
+            }
+            if self.case_dir is not None:
+                kwargs["case_dir"] = self.case_dir
+            if self.resume:
+                kwargs["resume"] = True
+            out.resumed = self.resume
+            out.result = self.run_fn(self.case, self.work_dir, **kwargs)
             out.stopped = self._stop
             out.errors.extend(getattr(out.result, "errors", []) or [])
         except Exception as exc:  # noqa: BLE001 - reported to the user

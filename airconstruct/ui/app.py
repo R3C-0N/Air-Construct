@@ -48,7 +48,7 @@ from .theme import COLORS, apply_theme, ensure_theme, set_prop
 from .units import Units
 from .view import geometry_items
 from .viewport import Viewport
-from .widgets.card import Card
+from .widgets.card import Card, CardColumn
 from .widgets.step_nav import StepNav
 from .widgets.toggle import ToggleSwitch
 
@@ -109,6 +109,10 @@ def _default_write_report(case: Case, case_dir: Path, out_dir: Path, summary=Non
     return write_report(case, case_dir, out_dir, summary=summary)
 
 
+#: steps whose content the model lock (a run going on) freezes; shown in their tooltip
+LOCKED_WHILE_RUNNING = ("model", "air", "volume")
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -148,6 +152,7 @@ class MainWindow(QMainWindow):
                               write_report=write_report_fn or _default_write_report,
                               open_report=open_report),
             goto_tab=self.goto_tab, show_message=self.show_message,
+            open_project=self.load_case,
             work_dir=lambda: self.work_dir,
         )
         self.confirm_discard: Callable[[], bool] = self._ask_save_changes
@@ -170,6 +175,8 @@ class MainWindow(QMainWindow):
             self.add_tab(cls(self.ctx))
 
         self.project.changed.connect(self._on_project_changed)
+        self.project.edit_refused.connect(self.show_message)
+        self.project.lock_changed.connect(lambda _l: self._update_badges())
         self.project.replaced.connect(self._on_project_replaced)
         self.project.dirty_changed.connect(lambda _d: self._update_title())
         self.project.path_changed.connect(self._update_title)
@@ -213,15 +220,34 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._action("&Quitter", self.close, [QKeySequence.StandardKey.Quit], m)
 
-        self.undo_action = self.project.undo_stack.createUndoAction(self, "Annuler")
+        # undo/redo follow the stack, and are off while a run locks the model
+        stack = self.project.undo_stack
+        self.undo_action = QAction("Annuler", self)
         self.undo_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.Undo)])
-        self.redo_action = self.project.undo_stack.createRedoAction(self, "Rétablir")
+        self.undo_action.triggered.connect(
+            lambda: None if self.project.locked else stack.undo())
+        self.redo_action = QAction("Rétablir", self)
         self.redo_action.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        self.redo_action.triggered.connect(
+            lambda: None if self.project.locked else stack.redo())
         for a in (self.undo_action, self.redo_action):
             self.addAction(a)
             self.global_actions.append(a)
+        for sig in (stack.canUndoChanged, stack.canRedoChanged, stack.undoTextChanged,
+                    stack.redoTextChanged, self.project.lock_changed):
+            sig.connect(self._sync_undo_actions)
+        self._sync_undo_actions()
         self.run_action = self._action("Lancer le calcul", self.start_run, ["Ctrl+R"])
         self._action("Tout désélectionner", self.selection.clear, ["Esc"])
+
+    def _sync_undo_actions(self, *_args) -> None:
+        stack, locked = self.project.undo_stack, self.project.locked
+        for action, can, word, text in (
+                (self.undo_action, stack.canUndo(), "Annuler", stack.undoText()),
+                (self.redo_action, stack.canRedo(), "Rétablir", stack.redoText())):
+            action.setEnabled(can and not locked)
+            action.setText(f"{word} {text}".strip() if not locked
+                           else f"{word} (verrouillé pendant le calcul)")
 
     def _action_button(self, action: QAction, glyph: str) -> QToolButton:
         """A fixed-glyph button that follows an action (its tooltip names the step)."""
@@ -334,7 +360,7 @@ class MainWindow(QMainWindow):
         tab._panels = {}
         for side, stack, w in (("left", self.left_stack, tab.left_panel()),
                                ("right", self.right_stack, tab.right_panel())):
-            if w is not None and not isinstance(w, Card) and not w.property("cards"):
+            if w is not None and not isinstance(w, (Card, CardColumn)) and not w.property("cards"):
                 card = Card()  # every side panel sits on a card
                 card.body.addWidget(w)
                 w = card
@@ -385,8 +411,10 @@ class MainWindow(QMainWindow):
         for i, key in enumerate(self.tab_order):
             alerts = self.alerts.for_tab(key)
             level = "error" if any(a.level == "error" for a in alerts) else "warning"
-            self.tab_bar.buttons[i].set_badge(len(alerts), level,
-                                              "\n".join(a.message for a in alerts))
+            lines = [a.message for a in alerts]
+            if self.project.locked and key in LOCKED_WHILE_RUNNING:
+                lines.insert(0, "Verrouillé pendant le calcul")
+            self.tab_bar.buttons[i].set_badge(len(alerts), level, "\n".join(lines))
 
     def tab_badge(self, key: str) -> str:
         """Text of a step's alert badge ('' when none)."""
@@ -577,6 +605,8 @@ class MainWindow(QMainWindow):
         elif not self.confirm_discard():
             event.ignore()
             return
+        for tab in self.tabs.values():
+            tab.closing()
         self.viewport.close_plotter()
         super().closeEvent(event)
 

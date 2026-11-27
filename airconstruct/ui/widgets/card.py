@@ -8,7 +8,8 @@ Owned by: workstream "ui" (shared widget, see docs/ui-architecture.md).
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
 
 class Card(QFrame):
@@ -44,3 +45,33 @@ class Card(QFrame):
     def set_title(self, text: str | None) -> None:
         self.title_label.setText(text or "")
         self.header.setVisible(bool(text))
+
+
+class CardColumn(QScrollArea):
+    """Several cards stacked in one side panel (scrolls when they do not fit). The
+    window shows it as is, without wrapping it in a card.
+
+        col = CardColumn(solver_card, live_card)
+        col.add(queue_card, stretch=1)
+    """
+
+    def __init__(self, *cards: QWidget, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("cardColumn")
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        inner.setObjectName("transparent")
+        self.column = QVBoxLayout(inner)
+        self.column.setContentsMargins(0, 0, 0, 0)
+        self.column.setSpacing(12)
+        self.setWidget(inner)
+        for c in cards:
+            self.add(c)
+        self.column.addStretch(1)
+
+    def add(self, card: QWidget, stretch: int = 0) -> None:
+        n = self.column.count()
+        at = n - 1 if n and self.column.itemAt(n - 1).spacerItem() else n
+        self.column.insertWidget(at, card, stretch)

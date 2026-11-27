@@ -76,6 +76,7 @@ class AirTab(StepTab):
     def actions(self): ...             # QActions with shortcuts, active while the tab is open
     def activated(self): ...           # tab opened
     def deactivated(self): ...         # another tab opened
+    def closing(self): ...             # the window closes: stop timers, free pyqtgraph scenes
 ```
 
 Call `self.scene_changed.emit()` when what `scene()` returns changes: the shell
@@ -108,6 +109,12 @@ the project through signals, not only in `activated()`.
 - Results: `project.results` is the last `RunRecord(outcome, case, data)` or
   `None`. `project.stale` is True when the model changed since that run (the
   Résultats tab shows the "version précédente du modèle" banner).
+- Lock: while a run of the open model goes on, `project.locked` is True (signal
+  `lock_changed(bool)`): edits of the physics are refused (`edit()` returns False and
+  `edit_refused(reason)` fires, the window shows the reason), edits under `data["ui"]`
+  still work, undo/redo is off and the Modèle, Air and Volume d'air steps say
+  "Verrouillé pendant le calcul" in their tooltip. Tabs that edit the model disable
+  their editors on `lock_changed`. The run controller sets it; tabs never do.
 
 **`ctx.selection`** (`Selection`): shared by the trees, the 3D view, inspectors and
 alerts. Keys are `"enclosure"`, `"component:<name>"`, `"opening:<name>"`; new object
@@ -134,11 +141,22 @@ status bar count follow. Clicking an alert opens its tab and selects its `target
 `units.length_to_display(m)`, `units.length_from_display(v)`, `units.fmt_length(m)`,
 `units.fmt_temperature(c)`, `units.length_symbol`, signal `changed`. Data stays SI.
 
-**`ctx.runner`** (`RunController`): `start()`, `stop()`, `running`,
-`progress_value / progress_max / progress_text`, `last_residuals`, `log_lines`;
-signals `started`, `log(str)`, `stage(str)`, `residual(int, dict)`, `progress`,
-`finished(outcome)`, `running_changed(bool)`. The outcome is stored in
-`project.results`.
+**`ctx.runner`** (`RunController`): `start()`, `stop()` (clean: the partial result is
+kept), `resume()` / `can_resume() -> (ok, why)` (continue the last stopped or
+unconverged run, `runner.resume_case`), `running`, `progress_value / progress_max /
+progress_text`, `last_residuals`, `log_lines`, `case_dir`; live numbers: `history`
+(one `monitor.Progress` per iteration: residuals per region and field, min/mean/max
+temperature per region, heat to the air, openings), `iteration`, `phase`
+(`mesh | flow | energy | check | post`), `phase_iterations()` (counts that add up to
+`iteration`), `elapsed_s()`, `remaining_s()`; run queue: `enqueue(data, label,
+path=None)`, `queue` (`QueueItem`s), `waiting()`, `move_in_queue`, `remove_from_queue`,
+`start_queue()`, `queue_paused` (a stop pauses it). Signals `started`, `log(str)`,
+`stage(str)`, `residual(int, dict)`, `snapshot(Progress)`, `progress`,
+`finished(outcome)`, `running_changed(bool)`, `queue_changed`. The outcome
+(`RunOutcome`: `result`, `summary`, `regions`, `errors`, `stopped`, `resumed`,
+`backend_missing`, `diagnosis`) of the open model's runs is stored in
+`project.results`; a queued case read from another file keeps its outcome on its
+`QueueItem`.
 
 **`ctx.expert`** (`ExpertMode`): `expert.on`, signal `changed(bool)`. Show advanced
 settings only when on.
@@ -147,6 +165,7 @@ settings only when on.
 `write_report(...)`, `open_report`. Injected so tests run without OpenFOAM.
 
 **`ctx.goto_tab(key)`**, **`ctx.show_message(text)`**, **`ctx.work_dir()`**,
+**`ctx.open_project(path) -> bool`** (asks to save the current project first),
 **`ctx.settings`** (QSettings: prefix your keys with the tab key, e.g. `"results/cmap"`).
 
 ## Look and feel (theme)
@@ -158,7 +177,9 @@ write their own style sheets, so every tab looks the same and the theme can chan
 one place:
 
 - Build each side panel from one or more `Card("Titre")` (`widgets/card.py`) and put
-  the content in `card.body`; a panel that is not a `Card` is wrapped in one.
+  the content in `card.body`; a panel that is not a `Card` is wrapped in one. Several
+  cards on one side: `CardColumn(card_a, card_b)` (scrolls when they do not fit).
+- A `SceneItem` with `label="cpu · 68 °C"` gets that text drawn next to it in 3D.
 - Mark widgets with properties instead of styles: `set_prop(button, kind="primary")`
   (blue), `kind="danger"`, `kind="flat"`; `set_prop(label, role="section")` (small
   uppercase title such as "PLACEMENT"), `role="muted"`, `role="title"`,
@@ -185,13 +206,16 @@ Use these rather than writing widgets from scratch; they are already dependencie
 | 3D view, picking, widgets in the scene (box/plane/line widgets for move, resize, cut planes, probe lines) | pyvista + pyvistaqt (`ctx.viewport.scene.plotter`) |
 | Collapsible sections, sliders with labels and ranges, searchable combo boxes, icon fonts, throttled/debounced signals | superqt (`QCollapsible`, `QLabeledDoubleSlider`, `QLabeledDoubleRangeSlider`, `QSearchableComboBox`, `superqt.utils.qthrottled` / `qdebounced`, `superqt.fonticon`) |
 | 2D charts: convergence (log scale), temperature bars with limits, line plots, live updates | pyqtgraph (`pyqtgraph.PlotWidget`) |
-
-Caution with pyqtgraph: a `PlotWidget` nested in a tab panel made the UI tests segfault
-when the window was destroyed (in `QGraphicsScene`'s destructor, depending on garbage
-collection timing). The Air tab draws its small fan chart with `QPainter` instead
-(`tabs/air/fan_chart.py`). If you use pyqtgraph, run your tab's tests several times in
-one process to be sure the window closes cleanly.
 | Report images | matplotlib (already used by `results.py`) |
+
+Caution with pyqtgraph: a `PlotWidget` nested in a tab panel can segfault when the window
+is destroyed (in `QGraphicsScene`'s destructor, depending on garbage collection timing).
+Two things fix it, both in place: the test teardown (`tests/conftest.py`) deletes only
+parentless top-level widgets (deleting pyqtgraph's own menus first crashed), and a tab
+with a chart empties its scene in `closing()` (`tabs/simulation/chart.py`,
+`ConvergenceChart.dispose`). Parent the tab's `QTimer`s to one of its widgets so they die
+with the window. The Air tab draws its small fan chart with `QPainter` instead
+(`tabs/air/fan_chart.py`). Either way, run your tab's tests several times in one process.
 
 ## Tests
 

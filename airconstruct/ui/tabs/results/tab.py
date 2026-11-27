@@ -391,7 +391,8 @@ class ResultsTab(StepTab):
         if rec is not None and rec.outcome.summary is not None and self.current is None:
             self._run_count += 1
             data = FieldData(rec.case, rec.outcome.regions) if rec.outcome.regions else None
-            entry = RunEntry(self._run_count, rec, datetime.now(), data)
+            entry = RunEntry(self._run_count, rec, datetime.now().astimezone().replace(tzinfo=None),
+                             data)
             entry.extra["store_id"] = history.record_run(self.store(), rec)
             self.history.append(entry)
             del self.history[:-HISTORY_SIZE]

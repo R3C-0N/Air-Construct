@@ -79,7 +79,7 @@ def run_date(rec) -> datetime:
             return datetime.fromisoformat(s).replace(tzinfo=None)
         except (TypeError, ValueError):
             continue
-    return datetime.now()
+    return datetime.now().astimezone().replace(tzinfo=None)
 
 
 def as_record(rec, load_regions=None):

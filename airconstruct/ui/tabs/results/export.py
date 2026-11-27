@@ -217,7 +217,7 @@ def write_pdf(path: Path, case, summary, rows: list[PartRow], case_dir: Path | N
             except Exception:  # noqa: BLE001, S110 - a report without pictures is still useful
                 pass
         with PdfPages(path) as pdf:
-            sub = f"Air-Construct · {fr_date(datetime.now())}"
+            sub = f"Air-Construct · {fr_date(datetime.now().astimezone())}"
             _cover(pdf, plt, f"{case.name} : résultats", sub, summary, rows)
             _bars(pdf, plt, rows)
             _energy(pdf, plt, summary)
