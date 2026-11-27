@@ -158,9 +158,9 @@ def templates(example: dict) -> list[Template]:
     case (the electronics board)."""
     return [
         Template("empty", "Boîte vide", "enceinte seule, à remplir", _empty_box()),
-        Template("board", "Carte électronique", "l’exemple : carte, cpu, dissipateur", example),
-        Template("rack", "Rack 1U", "440 × 44 mm, 2 ventilateurs", _rack_1u()),
-        Template("psu", "Boîtier d’alimentation", "transfo + régulateurs, convection",
+        Template("board", "Carte électronique", "l’exemple : carte et cpu", example),
+        Template("rack", "Rack 1U", "440 × 44 mm, 2 ventilos", _rack_1u()),
+        Template("psu", "Boîtier d’alimentation", "transfo, régulateurs",
                  _power_supply()),
         Template("cad", "Importer un fichier CAO", "STEP / STL · plus tard", {}, enabled=False),
     ]

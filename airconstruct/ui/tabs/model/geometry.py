@@ -220,11 +220,21 @@ def set_size(data: dict, part_names: Iterable[str], axis: int, value: float) -> 
         set_lo_size(c, lo, size)
 
 
+def move_by(data: dict, part_names: list[str], raw: Iterable[float],
+            step: float | None) -> list[str]:
+    """Move by ``raw`` rounded to whole grid steps along each axis (so a part resting
+    on another stays on it when dragged sideways); an axis not dragged stays."""
+    delta = [0.0 if abs(v) < 1e-7 else snap(v, step) for v in raw]
+    if all(abs(v) < EPS for v in delta):
+        return []
+    return move(data, part_names, delta)
+
+
 def apply_bounds(data: dict, name: str, bounds: Iterable[float], mode: str,
                  step: float | None) -> None:
     """Result of a 3D handle on part ``name``: ``bounds`` is (xmin, xmax, ymin, ymax,
-    zmin, zmax). ``mode`` "move" keeps the size and moves the part (and its group) so
-    its min corner lands on the snap grid; "resize" snaps every face to the grid
+    zmin, zmax). ``mode`` "move" keeps the size and moves the part (and its group)
+    by a whole number of grid steps; "resize" puts each dragged face on the grid
     (a face that did not move stays where it was)."""
     c = comp(data, name)
     if c is None or name in read_meta(data)["locked"]:
@@ -234,17 +244,18 @@ def apply_bounds(data: dict, name: str, bounds: Iterable[float], mode: str,
     new_lo = [b[0], b[2], b[4]]
     new_hi = [b[1], b[3], b[5]]
     if mode == "move":
-        delta = [snap(new_lo[i], step) - lo[i] for i in range(3)]
-        if any(abs(v) > EPS for v in delta):
-            move(data, [name], delta)
+        move_by(data, [name], [new_lo[i] - lo[i] for i in range(3)], step)
         return
     tol = 1e-7
     min_size = step or 1e-4
     for i in range(3):
-        a = lo[i] if abs(new_lo[i] - lo[i]) < tol else snap(new_lo[i], step)
-        z = hi[i] if abs(new_hi[i] - hi[i]) < tol else snap(new_hi[i], step)
+        lo_moved, hi_moved = abs(new_lo[i] - lo[i]) >= tol, abs(new_hi[i] - hi[i]) >= tol
+        if not (lo_moved or hi_moved):
+            continue
+        a = snap(new_lo[i], step) if lo_moved else lo[i]
+        z = snap(new_hi[i], step) if hi_moved else hi[i]
         if z - a < min_size:  # never flip or flatten a part
-            if abs(new_lo[i] - lo[i]) >= tol:
+            if lo_moved:
                 a = z - min_size
             else:
                 z = a + min_size
