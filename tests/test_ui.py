@@ -125,14 +125,13 @@ def test_window_run_with_mocks(qapp, tmp_path, settings):
                       load_regions_fn=lambda d: {}, estimate_fn=lambda c: 90.0)
     sim, res, model = win.tabs["simulation"], win.tabs["results"], win.tabs["model"]
     assert sim.run_button.isEnabled()
-    assert "2 min" in model.form.estimate_label.text()
     outcome = run_and_wait(qapp, win)
     assert outcome.success
     assert "Convergé" in sim.progress.format()
     assert res.results.table.rowCount() == 4
     assert res.results.table.item(0, 0).text() == "cpu"  # hottest first
     assert "fake solver start" in sim.log.toPlainText()
-    assert sim.run_button.isEnabled() and model.form.isEnabled()
+    assert sim.run_button.isEnabled() and model.library_buttons[0].isEnabled()
     assert not win.project.stale and res.banner.isHidden()
     win.close()
 
@@ -231,7 +230,6 @@ def test_window_save_load(qapp, tmp_path, settings):
     assert win.state_label.text() == "enregistré"
     assert win.load_case(p)
     assert _close(win.project.case, Case.load(EXAMPLE))
-    assert _close(win.tabs["model"].form.to_case(), Case.load(EXAMPLE))
     assert win.recent_files()[0] == str(p.resolve())
     win.close()
 
@@ -334,21 +332,21 @@ def test_shell_has_five_tabs_and_swaps_panels(qapp, tmp_path, settings):
     win.close()
 
 
-def test_undo_redo_through_the_legacy_form(qapp, tmp_path, settings):
+def test_undo_redo_through_the_model_inspector(qapp, tmp_path, settings):
     win = make_window(tmp_path, settings)
-    form = win.tabs["model"].form
+    insp = win.tabs["model"].inspector
     assert not win.project.dirty
-    form.ambient_spin.setValue(35.0)
-    win.tabs["model"].binding.push()
-    assert win.project.case.ambient_temperature == 35.0
+    win.selection.set(["component:cpu"])
+    insp.power.edit.setText("12")
+    insp.power._commit()
+    assert win.project.case.components[1].power == 12.0
     assert win.project.dirty and win.state_label.text() == "modifié"
-    assert win.undo_action.isEnabled()
     win.undo_action.trigger()
-    assert win.project.case.ambient_temperature == 25.0
-    assert form.ambient_spin.value() == 25.0  # form follows the project
+    assert win.project.case.components[1].power == 15.0
+    assert insp.power.edit.text() == "15"  # the inspector follows the project
     assert not win.project.dirty
     win.redo_action.trigger()
-    assert form.ambient_spin.value() == 35.0
+    assert insp.power.edit.text() == "12"
     win.close()
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -46,7 +47,12 @@ def highlight_items(items: list[SceneItem], keys: list[str]) -> list[SceneItem]:
 
 
 class Viewport(QWidget):
-    """SceneView + camera buttons + a slot for the active tab's toolbar."""
+    """SceneView + camera buttons + a slot for the active tab's toolbar.
+
+    ``redrawn`` is emitted after every redraw: a tab that adds widgets to the scene
+    (move/resize handles) re-adds them then."""
+
+    redrawn = Signal()
 
     def __init__(self, selection: Selection, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -126,6 +132,7 @@ class Viewport(QWidget):
 
     def _redraw(self, reset_camera: bool = False) -> None:
         self.scene.draw(highlight_items(self.items, self.selection.keys), reset_camera)
+        self.redrawn.emit()
 
     def _on_picked(self, key, additive: bool) -> None:
         self.selection.select(key, additive)

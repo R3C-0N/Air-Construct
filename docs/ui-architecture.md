@@ -39,7 +39,16 @@ touching the same files.
 | `ui/tabs/volume/` | thread Volume d'air | tab 3 |
 | `ui/tabs/simulation/` | thread Simulation | tab 4 |
 | `ui/tabs/results/` | thread Résultats | tab 5 |
-| `ui/form.py` | temporary | the old case form, shown by the Modèle tab until the tabs have their own editors |
+| `ui/form.py` | temporary | the old case form; no longer shown (the Modèle tab has its own editor), kept until the other tabs have theirs, then removed |
+
+The Modèle tab (`ui/tabs/model/`) is a model for the others: the operations are plain
+functions on the project data (`geometry.py`, tested without Qt), the panels only turn
+user input into `project.edit(...)` calls. It stores its UI metadata under
+`data["ui"]["model"]` (`groups`, `hidden`, `locked`, `kinds`), shows its move/resize
+handles with `plotter.add_box_widget` (re-added on `Viewport.redrawn`), and provides
+the "Nouveau projet" dialog the shell opens from Fichier > Nouveau
+(`MainWindow.ask_new_project`, replaceable in tests). A side panel made of several
+cards sets the Qt property `cards` so the shell does not wrap it in another card.
 
 A tab thread works inside its own `ui/tabs/<key>/` package (add as many modules as
 needed there) and its tests in `tests/test_tab_<key>.py`. If it needs something
