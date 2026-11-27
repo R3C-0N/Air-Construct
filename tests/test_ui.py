@@ -213,7 +213,7 @@ def test_window_invalid_case_disables_run(qapp, tmp_path, settings):
     assert win.project.case is None
     assert not sim.run_button.isEnabled() and not win.run_action.isEnabled()
     assert not win.start_run()
-    assert "outlet" in sim.blocked_label.text()
+    assert "sortie" in sim.blocked_label.text()  # French alert text (alerts.CASE_MESSAGES)
     assert [a.tab for a in win.alerts.alerts] == ["air"]
     assert win.tab_badge("air") == "1" and win.tab_badge("model") == ""
     assert win.status.alerts_button.text() == "1 alerte"

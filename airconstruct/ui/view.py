@@ -35,6 +35,7 @@ class SceneItem:
     kwargs: dict = field(default_factory=dict)
     key: str | None = None  # selection key (selection.py) of the object it shows
     label: str | None = None  # text drawn next to the item (e.g. "cpu · 68 °C")
+    highlight_opacity: float = 0.8  # opacity at least this when selected (surfaces)
 
 
 def opening_bounds(case: Case, opening) -> tuple[float, float, float, float, float, float]:

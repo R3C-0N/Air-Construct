@@ -57,6 +57,20 @@ _TAB_BY_FIELD = {
 }
 
 
+#: French text of the whole-case checks (Case._check_geometry). A tab that checks the
+#: same thing itself can reuse these strings: equal alerts are shown once.
+CASE_MESSAGES = {
+    "the case needs at least one inlet":
+        "Aucune entrée d’air : ajoutez une entrée ou un ventilateur de soufflage.",
+    "the case needs at least one outlet":
+        "Aucune sortie d’air : ajoutez une sortie ou un ventilateur d’extraction.",
+    "every opening has an imposed flow rate: at least one must be a free vent, a plain "
+    "outlet or a fan with a curve":
+        "Toutes les ouvertures imposent leur débit : il en faut au moins une libre "
+        "(sortie à pression ambiante, entrée libre ou ventilateur avec courbe).",
+}
+
+
 def validation_alerts(data: dict, error: Exception | None) -> list[Alert]:
     """Case validation errors, as alerts attached to the right tab and object."""
     if error is None:
@@ -72,12 +86,12 @@ def validation_alerts(data: dict, error: Exception | None) -> list[Alert]:
                              _TAB_BY_FIELD.get(str(loc[0]), MODEL), _target_from_loc(loc, data)))
             continue
         # whole-case checks (Case._check_geometry): find the tab and object from the text
-        tab = AIR if re.search(r"\b(inlet|outlet)\b", msg) else MODEL
+        tab = AIR if re.search(r"\b(inlet|outlet|opening)\b", msg) else MODEL
         target = None
         m = re.search(r"component '([^']+)'", msg)
         if m:
             target = component_key(m.group(1))
-        out.append(Alert(ERROR, msg, tab, target))
+        out.append(Alert(ERROR, CASE_MESSAGES.get(msg, msg), tab, target))
     return out
 
 

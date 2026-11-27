@@ -118,7 +118,7 @@ the project through signals, not only in `activated()`.
 
 **`ctx.selection`** (`Selection`): shared by the trees, the 3D view, inspectors and
 alerts. Keys are `"enclosure"`, `"component:<name>"`, `"opening:<name>"`; new object
-kinds use `"<kind>:<name>"`. `selection.keys`, `selection.current`,
+kinds use `"<kind>:<name>"` (the Air tab adds `"face:<face>"` and `"walls"`). `selection.keys`, `selection.current`,
 `selection.set(keys)`, `selection.select(key, additive)`, `selection.rename(old, new)`
 (call it when renaming an object), signal `changed(list)`. Deleted objects are
 dropped from the selection automatically.
@@ -207,10 +207,16 @@ Use these rather than writing widgets from scratch; they are already dependencie
 | Collapsible sections, sliders with labels and ranges, searchable combo boxes, icon fonts, throttled/debounced signals | superqt (`QCollapsible`, `QLabeledDoubleSlider`, `QLabeledDoubleRangeSlider`, `QSearchableComboBox`, `superqt.utils.qthrottled` / `qdebounced`, `superqt.fonticon`) |
 | 2D charts: convergence (log scale), temperature bars with limits, line plots, live updates | pyqtgraph (`pyqtgraph.PlotWidget`) |
 
-pyqtgraph with PySide6: empty a chart's scene in the tab's `closing()` (see
-`tabs/simulation/chart.py`, `ConvergenceChart.dispose`), otherwise destroying the window
-can crash; and parent the tab's `QTimer`s to one of its widgets so they die with it.
 | Report images | matplotlib (already used by `results.py`) |
+
+Caution with pyqtgraph: a `PlotWidget` nested in a tab panel can segfault when the window
+is destroyed (in `QGraphicsScene`'s destructor, depending on garbage collection timing).
+Two things fix it, both in place: the test teardown (`tests/conftest.py`) deletes only
+parentless top-level widgets (deleting pyqtgraph's own menus first crashed), and a tab
+with a chart empties its scene in `closing()` (`tabs/simulation/chart.py`,
+`ConvergenceChart.dispose`). Parent the tab's `QTimer`s to one of its widgets so they die
+with the window. The Air tab draws its small fan chart with `QPainter` instead
+(`tabs/air/fan_chart.py`). Either way, run your tab's tests several times in one process.
 
 ## Tests
 
