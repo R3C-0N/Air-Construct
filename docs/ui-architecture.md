@@ -206,7 +206,6 @@ Use these rather than writing widgets from scratch; they are already dependencie
 | 3D view, picking, widgets in the scene (box/plane/line widgets for move, resize, cut planes, probe lines) | pyvista + pyvistaqt (`ctx.viewport.scene.plotter`) |
 | Collapsible sections, sliders with labels and ranges, searchable combo boxes, icon fonts, throttled/debounced signals | superqt (`QCollapsible`, `QLabeledDoubleSlider`, `QLabeledDoubleRangeSlider`, `QSearchableComboBox`, `superqt.utils.qthrottled` / `qdebounced`, `superqt.fonticon`) |
 | 2D charts: convergence (log scale), temperature bars with limits, line plots, live updates | pyqtgraph (`pyqtgraph.PlotWidget`) |
-
 | Report images | matplotlib (already used by `results.py`) |
 
 Caution with pyqtgraph: a `PlotWidget` nested in a tab panel can segfault when the window
