@@ -8,7 +8,8 @@ tab's left panel, the shared 3D viewport and the tab's right panel, and the stat
 bar (alerts, messages, units, shortcuts). The shell owns the shared state
 (:class:`~airconstruct.ui.context.AppContext`); the tabs own their panels.
 
-Start it with ``airconstruct-gui [case.yaml]`` or ``python -m airconstruct.ui``.
+Start it with ``airconstruct-gui [case.yaml] [--setup-openfoam]`` or ``python -m airconstruct.ui``
+(``--setup-openfoam``: offer to install WSL2 / OpenFOAM if missing, see foam_setup).
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..case import Case
+from ..foam_setup import RESUME_FLAG
 from .alerts import Alert, AlertCenter
 from .context import AppContext, ExpertMode, Services
 from .project import Project
@@ -593,6 +595,14 @@ class MainWindow(QMainWindow):
             self.settings.setValue("work_dir", d)
             self.show_message(f"Les calculs sont enregistrés dans {self.work_dir}")
 
+    def offer_openfoam_setup(self):
+        """Go to the Simulation step and offer to install what is missing."""
+        sim = self.tabs.get("simulation")
+        if sim is None:
+            return None
+        self.goto_tab("simulation")
+        return sim.offer_setup()
+
     def closeEvent(self, event) -> None:
         if self.runner.running:
             ans = QMessageBox.question(self, "Quitter",
@@ -616,11 +626,15 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv)
     app.setApplicationName("Air-Construct")
     apply_theme(app)
-    case_path = Path(argv[1]) if len(argv) > 1 else None
+    setup = RESUME_FLAG in argv[1:]
+    args = [a for a in argv[1:] if a != RESUME_FLAG]
+    case_path = Path(args[0]) if args else None
     win = MainWindow()
     if case_path is not None:
         win.load_case(case_path)
     win.show()
+    if setup:  # installer or restart: finish installing WSL2 / OpenFOAM
+        QTimer.singleShot(300, win.offer_openfoam_setup)
     return app.exec()
 
 

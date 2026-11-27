@@ -219,6 +219,102 @@ def test_openfoam_missing_dialog(qapp, tmp_path, settings, monkeypatch):
     win.close()
 
 
+def _wsl_fake_setup(result_status="done", started=None):
+    """Factory for SimulationTab.setup_factory: a FoamSetup on a fake shell."""
+    from airconstruct.foam_setup import FoamSetup, SetupCancelled, Shell
+
+    class FakeShell(Shell):
+        def run(self, argv, on_line=None, cancel=None):
+            if on_line:
+                on_line("== airconstruct: step 4/4 openfoam2406-default")
+            return {"done": 0, "failed": 100}.get(result_status, 0) if "bash" in argv else (
+                1 if "--status" in argv else 0)
+
+        def run_elevated(self, exe, args):
+            if result_status == "cancelled":
+                raise SetupCancelled()
+            return 0
+
+        def open_console(self, argv):
+            pass
+
+    def factory(plan, check, on_step, on_line, on_progress):
+        if started is not None:
+            started.append(plan.kind)
+        return FoamSetup(plan, check, shell=FakeShell(), wsl_exe="wsl.exe", platform="win32",
+                         on_step=on_step, on_line=on_line, on_progress=on_progress,
+                         schedule=lambda: True, unschedule=lambda: None)
+    return factory
+
+
+def test_openfoam_dialog_installs_automatically(qapp, tmp_path, settings, monkeypatch):
+    from airconstruct import foam_setup
+    from airconstruct.ui.tabs.simulation import tab as sim_tab
+
+    monkeypatch.setattr(sim_tab, "plan_for", lambda msg: foam_setup.plan_for(msg, "win32"))
+    win, sim = window(tmp_path, settings, None)
+    started = []
+    sim.setup_factory = _wsl_fake_setup("done", started)
+    sim.check_backend = lambda: (True, "OpenFOAM v2406 in WSL")
+    dlg = sim.show_openfoam_dialog("OpenFOAM was not found in WSL. Open the Ubuntu terminal")
+    assert dlg.auto_box.isVisibleTo(dlg) and not dlg.manual_box.isVisibleTo(dlg)
+    assert "Installer OpenFOAM v2406" in dlg.consent.text()
+    dlg.manual_button.click()  # the commands are still there for who wants them
+    assert dlg.manual_box.isVisibleTo(dlg) and dlg.command_rows
+    dlg.install_button.click()
+    assert dlg.progress_box.isVisibleTo(dlg) and not dlg.manual_box.isVisibleTo(dlg)
+    assert wait_until(qapp, lambda: dlg.result is not None, 10)
+    assert started == ["openfoam"] and dlg.result.status == "done" and dlg.found
+    assert dlg.step_labels["openfoam"].text().startswith("✓")
+    assert "step 4/4" in dlg.log.toPlainText()
+    assert dlg.recheck_button.text() == "Fermer"
+    win.close()
+
+
+def test_openfoam_dialog_restart_and_failure(qapp, tmp_path, settings, monkeypatch):
+    from airconstruct import foam_setup
+    from airconstruct.ui.tabs.simulation import tab as sim_tab
+
+    monkeypatch.setattr(sim_tab, "plan_for", lambda msg: foam_setup.plan_for(msg, "win32"))
+    win, sim = window(tmp_path, settings, None)
+    restarts = []
+    sim.restart_windows = lambda: restarts.append(1)
+    sim.setup_factory = _wsl_fake_setup("done")
+    dlg = sim.show_openfoam_dialog("WSL2 is not installed. Open PowerShell as administrator")
+    assert "Redémarrer Windows" in dlg.consent.text()
+    assert "redémarrage" in dlg.notes.text() and "administrateur" in dlg.notes.text()
+    dlg.start_install()
+    assert wait_until(qapp, lambda: dlg.result is not None, 10)
+    assert dlg.result.status == "reboot"
+    assert dlg.restart_button.isVisibleTo(dlg) and dlg.close_button.text() == "Plus tard"
+    dlg.restart_button.click()
+    assert restarts == [1]
+    # a failure shows the commands to run by hand, and "Réessayer"
+    sim.setup_factory = _wsl_fake_setup("failed")
+    dlg = sim.show_openfoam_dialog("OpenFOAM was not found in WSL. Open the Ubuntu terminal")
+    dlg.start_install()
+    assert wait_until(qapp, lambda: dlg.result is not None, 10)
+    assert dlg.result.status == "failed" and "code 100" in dlg.status.text()
+    assert dlg.manual_box.isVisibleTo(dlg) and dlg.install_button.text() == "Réessayer"
+    assert dlg.step_labels["openfoam"].text().startswith("✕")
+    win.close()
+
+
+def test_setup_flag_offers_the_installation(qapp, tmp_path, settings, monkeypatch):
+    from airconstruct import foam_setup
+    from airconstruct.ui.tabs.simulation import tab as sim_tab
+
+    monkeypatch.setattr(sim_tab, "plan_for", lambda msg: foam_setup.plan_for(msg, "win32"))
+    win, sim = window(tmp_path, settings, None)
+    sim.check_backend = lambda: (True, "OpenFOAM v2406")
+    assert win.offer_openfoam_setup() is None  # nothing missing: no dialog
+    sim.check_backend = lambda: (False, "WSL2 is not installed. Open PowerShell")
+    dlg = win.offer_openfoam_setup()
+    assert dlg is not None and dlg.isVisible() and dlg.plan.kind == "wsl"
+    assert win.tab_order[win.tab_bar.currentIndex()] == "simulation"
+    win.close()
+
+
 @pytest.mark.parametrize(("message", "platform", "title", "first_cmd"), [
     ("WSL2 is not installed. Open PowerShell as administrator", "win32",
      "WSL n’est pas installé", "wsl --install -d Ubuntu"),

@@ -35,7 +35,16 @@ case.yaml ──> mesh.py ──> foam/writer.py ──> runner.py ──> resul
 
 Air-Construct runs OpenFOAM through `wsl.exe`. Cases are copied into the Linux
 filesystem (`~/.cache/airconstruct/cases`) to avoid slow `/mnt/c` I/O, and results come
-back next to the case on the Windows side. Setup:
+back next to the case on the Windows side.
+
+Automatic setup: when WSL2, Ubuntu or OpenFOAM is missing, the "OpenFOAM est
+introuvable" dialog of the Simulation step offers **Installer automatiquement**
+(`airconstruct/foam_setup.py`): `wsl --install` with one UAC prompt, a Windows restart
+after which Air-Construct reopens and resumes (`--setup-openfoam`, registered in
+`RunOnce`), the first start of Ubuntu (where you create your Linux user), then OpenFOAM
+installed as root inside the distro. The Windows installer starts the app with
+`--setup-openfoam`, so a fresh PC is offered this right away. On Debian/Ubuntu the same
+dialog installs OpenFOAM through `pkexec`. Manual setup:
 
 ```powershell
 wsl --install -d Ubuntu          # admin PowerShell, then reboot and open Ubuntu once
@@ -57,7 +66,7 @@ Every push to `main` (finished work merged from `develop`, see
 the `Air-Construct-windows-x64` artifact (installer `...-setup.exe`, or a portable `.zip`)
 or `Air-Construct-linux-x64` (`.tar.gz`). Tagging a version `v*` attaches the same
 files to a GitHub release. The installer is per-user and needs no admin rights;
-OpenFOAM still has to be installed in WSL2 (see above).
+the app then offers to install WSL2 and OpenFOAM (see above).
 
 To build it yourself: `pip install ".[ui,results]" pyinstaller` then
 `pyinstaller packaging/airconstruct.spec --noconfirm`; the app is in
