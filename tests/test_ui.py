@@ -323,8 +323,8 @@ def test_shell_has_five_tabs_and_swaps_panels(qapp, tmp_path, settings):
     win.goto_tab("simulation")
     assert win.current_tab is win.tabs["simulation"]
     assert win.right_stack.currentWidget() is win.tabs["simulation"].right_panel()
-    win.goto_tab("volume")  # no right panel: the stack is hidden
-    assert not win.right_stack.isVisibleTo(win)
+    win.goto_tab("volume")
+    assert win.right_stack.currentWidget() is win.tabs["volume"].right_panel()
     win.goto_tab("results")
     assert win.viewport.tab_toolbars.currentWidget() is win.tabs["results"].viewport_toolbar()
     win.close()
