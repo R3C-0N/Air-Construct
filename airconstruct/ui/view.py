@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 from ..case import Case, Face, OpeningKind
@@ -315,27 +315,36 @@ class SceneView(QWidget):
     #: called on release: (delta, free) -> bool (True = the model changed, a redraw follows)
     drag_end: Callable[[tuple, bool], bool] | None = None
     def _enable_picking(self) -> None:
-        try:
-            iren = self.plotter.iren.interactor
-            self._picker = _vtk_cell_picker()
-            self._observers = {}
-            for event, fn in (("LeftButtonPressEvent", self._on_press),
-                              ("MouseMoveEvent", self._on_move),
-                              ("LeftButtonReleaseEvent", self._on_release)):
-                # before the camera style and the box widgets (priority 0 .. 0.5)
-                self._observers[event] = iren.AddObserver(event, fn, 10.0)
-        except Exception:  # noqa: BLE001, S110 - picking is a convenience
-            pass
-        self._press = None  # (x, y, pick) of the press not handed to VTK
+        # Qt sees the mouse before VTK: an event this filter keeps never reaches the
+        # camera style or the box widgets
+        self._picker = _vtk_cell_picker()
+        self._press = None  # (x, y, pick) of the last left press, display pixels
         self._drag = None  # state of the drag in progress
         self._last_click = (0.0, None)
+        self.plotter.interactor.installEventFilter(self)
 
-    def _abort(self, event: str) -> None:
-        """Keep the camera style and the widgets from seeing this mouse event."""
+    def eventFilter(self, obj, ev) -> bool:
+        p = self.plotter
+        if p is None or obj is not p.interactor:
+            return False
+        t = ev.type()
         try:
-            self.plotter.iren.interactor.GetCommand(self._observers[event]).SetAbortFlag(1)
-        except Exception:  # noqa: BLE001, S110
-            pass
+            if t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
+                return self._on_press(*self._display_xy(ev))
+            if t == QEvent.Type.MouseMove and self._drag is not None:
+                return self._on_move(*self._display_xy(ev))
+            if t == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
+                return self._on_release(*self._display_xy(ev))
+        except Exception:  # noqa: BLE001 - never break the camera
+            self._drag = None
+        return False
+
+    def _display_xy(self, ev) -> tuple[int, int]:
+        """Qt widget position -> VTK display pixels (origin bottom left)."""
+        w = self.plotter.interactor
+        r = w.devicePixelRatioF()
+        pos = ev.position()
+        return round(pos.x() * r), round((w.height() - pos.y() - 1) * r)
 
     def _mods(self) -> tuple[bool, bool, bool]:
         """(additive: Ctrl or Shift, vertical: Shift, free: Alt)."""
@@ -391,86 +400,67 @@ class SceneView(QWidget):
         n = math.sqrt(sum(v * v for v in d)) or 1.0
         return ends[0], tuple(v / n for v in d)
 
-    def _event_xy(self) -> tuple[int, int]:
-        return tuple(self.plotter.iren.interactor.GetEventPosition())
-
-    def _on_press(self, _obj, event) -> None:
-        try:
-            x, y = self._event_xy()
-            pick = self.pick_at(x, y)
-        except Exception:  # noqa: BLE001 - never break the camera
-            self._press = None
-            return
+    def _on_press(self, x: int, y: int) -> bool:
+        """True when the press starts a drag (kept from VTK)."""
+        self._drag = None
+        pick = self.pick_at(x, y)
         self._press = (x, y, pick)
         if pick.key is None or pick.point is None or self.drag_start is None:
-            return
+            return False
         _add, vertical, _free = self._mods()
         if not self.drag_start(pick.key, pick.point):
-            return
+            return False
         view = self.plotter.camera.GetDirectionOfProjection()
         self._drag = {"origin": pick.point, "normal": drag_normal(view, vertical),
                       "vertical": vertical, "delta": (0.0, 0.0, 0.0), "moved": False}
-        self._abort(event)
+        return True
 
-    def _on_move(self, _obj, event) -> None:
+    def _on_move(self, x: int, y: int) -> bool:
         d = self._drag
-        if d is None:
-            return
-        self._abort(event)
-        try:
-            x, y = self._event_xy()
-            px, py, _ = self._press
-            if not d["moved"] and abs(x - px) + abs(y - py) < CLICK_PIXELS:
-                return
-            d["moved"] = True
-            origin, direction = self._ray(x, y)
-            hit = ray_plane(origin, direction, d["origin"], d["normal"])
-            if hit is None:
-                return
-            raw = tuple(h - o for h, o in zip(hit, d["origin"]))
-            if d["vertical"]:
-                raw = (0.0, 0.0, raw[2])
-            _add, _v, free = self._mods()
-            shown = self.drag_move(raw, free) if self.drag_move else raw
-            d["delta"] = raw
-            self.preview_offset(self.drag_keys, shown)
-        except Exception:  # noqa: BLE001, S110
-            pass
+        px, py, _ = self._press
+        if not d["moved"] and abs(x - px) + abs(y - py) < CLICK_PIXELS:
+            return True
+        d["moved"] = True
+        origin, direction = self._ray(x, y)
+        hit = ray_plane(origin, direction, d["origin"], d["normal"])
+        if hit is None:
+            return True
+        raw = tuple(h - o for h, o in zip(hit, d["origin"]))
+        if d["vertical"]:
+            raw = (0.0, 0.0, raw[2])
+        _add, _v, free = self._mods()
+        shown = self.drag_move(raw, free) if self.drag_move else raw
+        d["delta"] = raw
+        self.preview_offset(self.drag_keys, shown)
+        return True
 
-    def _on_release(self, _obj, event) -> None:
+    def _on_release(self, x: int, y: int) -> bool:
+        """A click (no move) is emitted; a drag is finished. True when it was a drag."""
         d, press = self._drag, self._press
         self._drag = self._press = None
+        additive, _v, free = self._mods()
         if d is not None:
-            self._abort(event)
-            _add, _v, free = self._mods()
             changed = False
-            if d["moved"] and self.drag_end is not None:
-                changed = bool(self.drag_end(d["delta"], free))
-            elif self.drag_end is not None:
-                self.drag_end((0.0, 0.0, 0.0), free)
+            if self.drag_end is not None:
+                changed = bool(self.drag_end(d["delta"] if d["moved"] else (0.0, 0.0, 0.0),
+                                             free))
             if not changed:
                 self.preview_offset(self.drag_keys, (0.0, 0.0, 0.0))
             self.drag_keys = []
             if d["moved"]:
-                return
+                return True
         if press is None:
-            return
-        try:
-            x, y = self._event_xy()
-        except Exception:  # noqa: BLE001
-            return
+            return d is not None
         px, py, pick = press
-        if abs(x - px) + abs(y - py) >= CLICK_PIXELS:
-            return  # the camera was turned or panned
-        if not pick.on_item:
-            return  # a press on a move/resize handle, not on the scene
-        additive, _v, free = self._mods()
+        if abs(x - px) + abs(y - py) >= CLICK_PIXELS or not pick.on_item:
+            return d is not None  # the camera was turned, or a handle was used
         now = time.monotonic()
         t, key = self._last_click
         pick.double = key == pick.key and now - t < DOUBLE_CLICK_S
         self._last_click = (0.0, None) if pick.double else (now, pick.key)
         pick.additive, pick.free = additive, free
         self.click(pick)
+        return d is not None
 
     def click(self, pick: Pick) -> None:
         """Emit ``clicked`` and ``picked`` for a click (also used by tests)."""
