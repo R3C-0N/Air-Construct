@@ -16,7 +16,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .materials import GASES, SOLIDS
+from .materials import GASES, SOLIDS, Solid
 
 
 class Vec3(BaseModel):
@@ -54,19 +54,18 @@ class Box(BaseModel):
 
 
 class Component(BaseModel):
-    """A solid part (chip, heatsink, board...). power > 0 makes it a heat source."""
+    """A solid part (chip, heatsink, board...). power > 0 makes it a heat source.
+
+    ``material`` is a built-in solid (materials.SOLIDS) or one of the case's own
+    ``materials`` (checked by :class:`Case`). ``max_temperature`` is the highest
+    temperature the part may reach [degC]: a pass/fail criterion for the results,
+    not used by the solver."""
 
     name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
     box: Box
     material: str = "aluminium"
     power: float = 0.0  # dissipated power [W]
-
-    @field_validator("material")
-    @classmethod
-    def _known_solid(cls, v: str) -> str:
-        if v not in SOLIDS:
-            raise ValueError(f"unknown solid material {v!r}, known: {sorted(SOLIDS)}")
-        return v
+    max_temperature: float | None = None  # [degC], criterion only
 
 
 class OpeningKind(str, Enum):
@@ -273,10 +272,21 @@ class Solver(BaseModel):
     convergence_tol: float = 1e-4
 
 
+class Material(Solid):
+    """A solid defined in the case file (custom material), same fields as the
+    built-in ones: conductivity kappa [W/m/K], density rho [kg/m3], cp [J/kg/K]."""
+
+    name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*$")
+    kappa: float = Field(gt=0.0)
+    rho: float = Field(gt=0.0)
+    cp: float = Field(gt=0.0)
+
+
 class Case(BaseModel):
     name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
     enclosure: Vec3
     fluid: str = "air"
+    materials: list[Material] = []  # custom solids, usable by components
     ambient_temperature: float = 25.0  # [degC]
     ambient_pressure: float = 101325.0  # [Pa]
     components: list[Component] = []
@@ -301,6 +311,15 @@ class Case(BaseModel):
         dup = {n for n in names if names.count(n) > 1} | (set(names) & reserved)
         if dup:
             raise ValueError(f"duplicate or reserved names: {sorted(dup)}")
+        mnames = [m.name for m in self.materials]
+        clash = {n for n in mnames if mnames.count(n) > 1} | (set(mnames) & set(SOLIDS))
+        if clash:
+            raise ValueError(f"duplicate or built-in material names: {sorted(clash)}")
+        known = set(SOLIDS) | set(mnames)
+        for c in self.components:
+            if c.material not in known:
+                raise ValueError(f"component {c.name!r}: unknown solid material "
+                                 f"{c.material!r}, known: {sorted(known)}")
         E = self.enclosure.as_tuple()
         for c in self.components:
             lo, hi = c.box.min, c.box.max
@@ -356,6 +375,13 @@ class Case(BaseModel):
             if all(lo[i] <= pt[i] <= hi[i] for i in range(3)):
                 return c.name
         return self.fluid_region
+
+    def solid(self, material: str) -> Solid:
+        """A material by name: the case's own materials first, then the built-in ones."""
+        for m in self.materials:
+            if m.name == material:
+                return m
+        return SOLIDS[material]
 
     @property
     def solid_regions(self) -> list[str]:

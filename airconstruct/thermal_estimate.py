@@ -21,7 +21,7 @@ import numpy as np
 
 from .case import Case, Component, Face, OpeningKind, WallMode
 from .fans import estimate_flow
-from .materials import GASES, SOLIDS
+from .materials import GASES
 from .mesh import FACE_AXES
 
 TOL = 1e-9
@@ -112,7 +112,7 @@ def estimate_temperatures(case: Case) -> dict[str, float]:
             if not ov:
                 continue
             area, _, ta, tb = ov
-            ka, kb = SOLIDS[comps[i].material].kappa, SOLIDS[comps[j].material].kappa
+            ka, kb = case.solid(comps[i].material).kappa, case.solid(comps[j].material).kappa
             g = area / (ta / (2 * ka) + tb / (2 * kb))
             G[i, i] += g
             G[j, j] += g
@@ -132,7 +132,7 @@ def estimate_temperatures(case: Case) -> dict[str, float]:
             covered[face] += area
             w = case.walls.for_face(face)
             if w.mode == WallMode.exchange:
-                k = SOLIDS[c.material].kappa
+                k = case.solid(c.material).kappa
                 d = c.box.size.as_tuple()[FACE_AXES[face][0]]
                 t_ext = w.t_external if w.t_external is not None else t_in
                 to_fixed(i, area / (d / (2 * k) + w.resistance()), t_ext)

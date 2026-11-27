@@ -156,6 +156,9 @@ class MainWindow(QMainWindow):
             work_dir=lambda: self.work_dir,
         )
         self.confirm_discard: Callable[[], bool] = self._ask_save_changes
+        from .tabs.model.new_project import ask_new_project
+
+        self.ask_new_project = ask_new_project
 
         self.tabs: dict[str, StepTab] = {}
         self.tab_order: list[str] = []
@@ -205,7 +208,7 @@ class MainWindow(QMainWindow):
         self.global_actions: list[QAction] = []
         self.file_menu = QMenu("Fichier", self)
         m = self.file_menu
-        self._action("&Nouveau", self.new_case, [QKeySequence.StandardKey.New], m)
+        self._action("&Nouveau…", self.new_project, [QKeySequence.StandardKey.New], m)
         self._action("&Ouvrir…", self.open_case, [QKeySequence.StandardKey.Open], m)
         self.recent_menu = m.addMenu("Récents")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
@@ -357,7 +360,7 @@ class MainWindow(QMainWindow):
         tab._panels = {}
         for side, stack, w in (("left", self.left_stack, tab.left_panel()),
                                ("right", self.right_stack, tab.right_panel())):
-            if w is not None and not isinstance(w, (Card, CardColumn)):
+            if w is not None and not isinstance(w, (Card, CardColumn)) and not w.property("cards"):
                 card = Card()  # every side panel sits on a card
                 card.body.addWidget(w)
                 w = card
@@ -495,11 +498,28 @@ class MainWindow(QMainWindow):
             return self.save_case()
         return ans == QMessageBox.StandardButton.Discard
 
-    def new_case(self, case: Case | None = None) -> bool:
+    def new_case(self, case: Case | dict | None = None) -> bool:
+        """Start a new project from ``case`` (a Case or project data, possibly not
+        valid yet), default: the example."""
         if self.runner.running or not self.confirm_discard():
             return False
-        self.project.reset_case(case or default_case())
+        case = case or default_case()
+        self.project.reset(case.model_dump(mode="json") if isinstance(case, Case) else case)
+        self.goto_tab(self.tab_order[0])
         return True
+
+    def new_project(self) -> bool:
+        """Fichier > Nouveau: the "Nouveau projet" dialog (templates, open, recent).
+        ``ask_new_project`` is replaceable, for tests."""
+        if self.runner.running:
+            return False
+        choice = self.ask_new_project(self, default_case().model_dump(mode="json"),
+                                      self.recent_files())
+        if choice is None:
+            return False
+        if isinstance(choice, (str, Path)):
+            return self.load_case(Path(choice))
+        return self.new_case(choice)
 
     def load_case(self, path: Path) -> bool:
         if self.runner.running or not self.confirm_discard():

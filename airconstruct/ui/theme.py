@@ -144,6 +144,10 @@ QTreeView, QListView, QTableView, QTableWidget, QTreeWidget {{ background: trans
     border: 0; outline: none; alternate-background-color: {c["field"]}; }}
 QTreeView {{ show-decoration-selected: 1; }}
 QTreeView::item, QListView::item {{ min-height: 30px; padding: 0 4px; border: 0; }}
+QListView::indicator, QTreeView::indicator {{ width: 14px; height: 14px; border-radius: 4px;
+    border: 1px solid {c["input_border"]}; background: white; }}
+QListView::indicator:checked, QTreeView::indicator:checked {{ background: {c["accent"]};
+    border-color: {c["accent"]}; }}
 QTreeView::item:hover, QListView::item:hover {{ background: {c["hover"]}; }}
 QTreeView::item:selected, QListView::item:selected, QTableView::item:selected {{
     background: {c["accent_soft"]}; color: {c["accent_dark"]}; }}
