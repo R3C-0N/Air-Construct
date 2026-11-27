@@ -42,9 +42,9 @@ _REGION = re.compile(r"^Solving for (fluid|solid) region (\w+)")
 _RES = re.compile(r"Solving for (\w+), Initial residual = (" + _NUM + r")")
 _MINMAX_T = re.compile(r"^Min/max T:\s*(" + _NUM + r")\s+(" + _NUM + r")")
 _FO_HEADER = re.compile(r"^(\w+) (\w+) write:\s*$")
-_FO_VALUE = re.compile(r"^\s+(\w+)\((.*?)\) of (\w+) = (" + _NUM + r")\s*$")
-_FO_HEAT = re.compile(r"^\s+min/max/integ\((\w+)\) = (" + _NUM + r"), (" + _NUM + r"), ("
-                      + _NUM + r")")
+_FO_VALUE = re.compile(r"^\s*(\w+)\((.*?)\)\s+of\s+(\w+)\s*=\s*(" + _NUM + r")\s*$")
+_FO_HEAT = re.compile(r"min/max/integ\(([^)\s]+)\)\s*=\s*(" + _NUM + r")\s*,\s*(" + _NUM
+                      + r")\s*,\s*(" + _NUM + r")")
 
 
 @dataclass
@@ -124,6 +124,10 @@ class RunMonitor:
         if m:
             self._fo = m.group(2)
             return
+        m = _FO_HEAT.search(line)  # wallHeatFlux: unambiguous, whatever the indentation
+        if m:
+            self._heat[m.group(1)] = _num(m.group(4))
+            return
         if self._fo:
             if self._fo_line(line):
                 return
@@ -141,10 +145,6 @@ class RunMonitor:
 
     def _fo_line(self, line: str) -> bool:
         name = self._fo
-        m = _FO_HEAT.match(line)
-        if m and name == "heat_air":
-            self._heat[m.group(1)] = _num(m.group(4))
-            return True
         m = _FO_VALUE.match(line)
         if not m:
             return bool(line.startswith((" ", "\t")) and line.strip())

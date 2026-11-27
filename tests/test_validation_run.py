@@ -55,10 +55,13 @@ def _check_live_monitors(case, res):
     assert {c.name for c in case.components} <= set(last.temperatures)
     for name, (_, tmax) in res.region_temperatures.items():
         assert last.temperatures[name]["max_c"] == tmax
-    if "retrying without them" in (res.case_dir / "log.chtMultiRegionSimpleFoam").read_text():
+    if "T_" not in (res.case_dir / "system" / "monitors").read_text():
         return  # this OpenFOAM build cannot run function objects: min/max only
     log = (res.case_dir / "log.chtMultiRegionSimpleFoam").read_text()
     assert "heat_air write:" in log, "function objects did not print their results"
+    lines = log.splitlines()
+    i = lines.index(next(ln for ln in lines if "heat_air write:" in ln))
+    print("function object output:\n" + "\n".join(lines[max(0, i - 30):i + 12]))
     for c in case.components:
         t = last.temperatures[c.name]
         assert t["min_c"] <= t["mean_c"] <= t["max_c"], (c.name, t)
