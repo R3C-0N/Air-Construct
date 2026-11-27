@@ -24,7 +24,7 @@ from ..case import Case, Component, Opening, OpeningKind, WallMode
 from ..fans import air_density, estimate_flow, opening_velocity
 from ..materials import GASES, SOLIDS
 from ..mesh import FACE_AXES, grille_depth, grille_zone, plan_mesh
-from .dictionary import write_foam_dict
+from .dictionary import Raw, write_foam_dict
 
 SOLVER_APP = "chtMultiRegionSimpleFoam"
 K0 = 273.15
@@ -105,7 +105,10 @@ def _control_dict(case: Case) -> dict:
         "runTimeModifiable": True,
         # SIGUSR1 = write now and stop: used by the runner to end a phase cleanly
         "OptimisationSwitches": {"stopAtWriteNowSignal": 10},
-        **({"functions": probe_functions(case)} if case.probes else {}),
+        # live monitors (function objects) written by the runner, see foam/monitors.py,
+        # then the probes of the case
+        "functions": {"monitors": Raw('#includeIfPresent "monitors"'),
+                      **(probe_functions(case) if case.probes else {})},
     }
 
 
