@@ -111,7 +111,7 @@ the project through signals, not only in `activated()`.
 
 **`ctx.selection`** (`Selection`): shared by the trees, the 3D view, inspectors and
 alerts. Keys are `"enclosure"`, `"component:<name>"`, `"opening:<name>"`; new object
-kinds use `"<kind>:<name>"`. `selection.keys`, `selection.current`,
+kinds use `"<kind>:<name>"` (the Air tab adds `"face:<face>"` and `"walls"`). `selection.keys`, `selection.current`,
 `selection.set(keys)`, `selection.select(key, additive)`, `selection.rename(old, new)`
 (call it when renaming an object), signal `changed(list)`. Deleted objects are
 dropped from the selection automatically.
@@ -185,6 +185,12 @@ Use these rather than writing widgets from scratch; they are already dependencie
 | 3D view, picking, widgets in the scene (box/plane/line widgets for move, resize, cut planes, probe lines) | pyvista + pyvistaqt (`ctx.viewport.scene.plotter`) |
 | Collapsible sections, sliders with labels and ranges, searchable combo boxes, icon fonts, throttled/debounced signals | superqt (`QCollapsible`, `QLabeledDoubleSlider`, `QLabeledDoubleRangeSlider`, `QSearchableComboBox`, `superqt.utils.qthrottled` / `qdebounced`, `superqt.fonticon`) |
 | 2D charts: convergence (log scale), temperature bars with limits, line plots, live updates | pyqtgraph (`pyqtgraph.PlotWidget`) |
+
+Caution with pyqtgraph: a `PlotWidget` nested in a tab panel made the UI tests segfault
+when the window was destroyed (in `QGraphicsScene`'s destructor, depending on garbage
+collection timing). The Air tab draws its small fan chart with `QPainter` instead
+(`tabs/air/fan_chart.py`). If you use pyqtgraph, run your tab's tests several times in
+one process to be sure the window closes cleanly.
 | Report images | matplotlib (already used by `results.py`) |
 
 ## Tests

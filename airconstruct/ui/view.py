@@ -34,6 +34,7 @@ class SceneItem:
     scalars: str | None = None
     kwargs: dict = field(default_factory=dict)
     key: str | None = None  # selection key (selection.py) of the object it shows
+    highlight_opacity: float = 0.8  # opacity at least this when selected (surfaces)
 
 
 def opening_bounds(case: Case, opening) -> tuple[float, float, float, float, float, float]:
