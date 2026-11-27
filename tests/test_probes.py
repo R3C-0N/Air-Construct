@@ -89,3 +89,15 @@ def test_headerless_file_keeps_probe_order(case, tmp_path):
     p = read_probes(case, tmp_path)
     assert p["above_cpu"].t_c == pytest.approx([27.0])
     assert p["outlet_air"].t_c == pytest.approx([26.0])
+
+
+def test_v2406_layout_region_below_function_object(case, tmp_path):
+    # what OpenFOAM v2406 really writes: postProcessing/probes_air/air/<t>/T, one
+    # start-time folder per solver phase, "# Time" header row
+    hdr = "# Probe 0 (0.075 0.055 0.04)\n# Probe 1 (0.195 0.06 0.03)\n# Time          0              1\n"
+    base = tmp_path / "postProcessing" / "probes_air" / "air"
+    _write(base / "0" / "T", hdr, ["10              300.15          299.15\n"])
+    _write(base / "220" / "T", hdr, ["230             301.15          299.65\n"])
+    p = read_probes(case, tmp_path)
+    assert p["above_cpu"].iterations == [10, 230]
+    assert p["above_cpu"].t_c == pytest.approx([27.0, 28.0])
