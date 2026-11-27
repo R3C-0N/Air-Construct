@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from ....materials import SOLIDS
 from ...selection import ENCLOSURE, parse_key
 from ...theme import COLORS, set_prop
+from . import cadparts
 from . import geometry as geo
 from .fields import NumberField
 from .library import PRESET_BY_KIND, material_label, material_props
@@ -57,6 +58,7 @@ class Inspector(QWidget):
     position_requested = Signal(int, float)  # axis, metres (selection's min corner)
     size_requested = Signal(int, float)  # axis, metres
     enclosure_requested = Signal(int, float)
+    drop_shape_requested = Signal()  # imported CAD parts back to plain boxes
 
     def __init__(self, ctx, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -119,6 +121,17 @@ class Inspector(QWidget):
         pl.addWidget(self.tmax, r, 1)
         r += 1
         pl.addWidget(self.kind_note, r, 0, 1, 2)
+        r += 1
+        self.shape_note = QLabel("")
+        self.shape_note.setWordWrap(True)
+        set_prop(self.shape_note, role="muted")
+        self.shape_button = QPushButton("Remplacer par sa boîte")
+        self.shape_button.setToolTip("Oublier la forme importée : la pièce devient un bloc "
+                                     "plein de la taille de sa boîte englobante.")
+        self.shape_button.clicked.connect(self.drop_shape_requested)
+        pl.addWidget(self.shape_note, r, 0, 1, 2)
+        r += 1
+        pl.addWidget(self.shape_button, r, 0, 1, 2)
         pl.setColumnStretch(1, 1)
         lay.addWidget(self.part_box)
 
@@ -228,7 +241,8 @@ class Inspector(QWidget):
         self.rest_label.setVisible(True)
         self.rest_on.setVisible(True)
         kind = m["kinds"].get(self.parts[0]) if one else None
-        label = PRESET_BY_KIND[kind].label if kind in PRESET_BY_KIND else None
+        label = (PRESET_BY_KIND[kind].label if kind in PRESET_BY_KIND
+                 else "pièce CAO" if kind == cadparts.KIND else None)
         self.title.setText(f"{self.parts[0]} · {label}" if one and label else
                            self.parts[0] if one else f"{len(comps)} pièces")
         self.kind_note.setText(
@@ -236,6 +250,15 @@ class Inspector(QWidget):
             "simulé. Un ventilateur sur une paroi se règle dans l’onglet Air."
             if kind == "fan" else "")
         self.kind_note.setVisible(kind == "fan")
+        shaped = [n for n in self.parts if cadparts.has_shape(data, n)]
+        info = cadparts.shape_info(comps[0]) if one else (
+            f"{len(shaped)} pièces à forme importée" if shaped else "")
+        if shaped:
+            info += (". Maillée en escalier selon sa forme réelle ; la redimensionner "
+                     "étire la forme." if one else ".")
+        self.shape_note.setText(info)
+        self.shape_note.setVisible(bool(shaped))
+        self.shape_button.setVisible(bool(shaped))
         # name
         self.name_label.setVisible(one)
         self.name_edit.setVisible(one)

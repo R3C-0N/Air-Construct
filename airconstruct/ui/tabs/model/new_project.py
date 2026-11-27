@@ -23,10 +23,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .... import cad
 from ...theme import COLORS, set_prop
+from . import cadparts
+from .cad_dialog import ask_cad_import
 from .library import Template
 
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+OPEN_FILTER = f"Cas Air-Construct (*.yaml *.yml);;{cad.FILE_FILTER}"
 
 
 class TemplateButton(QPushButton):
@@ -53,6 +57,7 @@ class NewProjectDialog(QDialog):
         self.data: dict | None = None
         self.open_path: Path | None = None
         self.buttons: dict[str, TemplateButton] = {}
+        self.ask_cad_import = ask_cad_import
 
         left = QVBoxLayout()
         left.setSpacing(12)
@@ -156,7 +161,24 @@ class NewProjectDialog(QDialog):
     def create(self) -> None:
         if not self._check():
             return
+        if self.current == "cad":
+            self._create_from_cad()
+            return
         self.data = self.buttons[self.current].template.build(self.name_edit.text())
+        self.accept()
+
+    def _create_from_cad(self) -> None:
+        """Pick a CAD file, then the import dialog; the project is built around its
+        parts. ``ask_cad_import`` is replaceable, for tests."""
+        choice = self.ask_cad_import(self, None)
+        if choice is None:
+            return
+        name = self.name_edit.text()
+        if name == self._default_name("cad"):
+            stem = re.sub(r"[^A-Za-z0-9_-]+", "_", choice.path.stem).strip("_-")
+            if NAME_RE.match(stem):
+                name = stem
+        self.data = cadparts.new_project(choice.bodies, name, choice.source, choice.material)
         self.accept()
 
     def _open(self, path: Path) -> None:
@@ -164,8 +186,7 @@ class NewProjectDialog(QDialog):
         self.accept()
 
     def _browse(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Ouvrir un cas", "",
-                                              "Cas Air-Construct (*.yaml *.yml)")
+        path, _ = QFileDialog.getOpenFileName(self, "Ouvrir un cas", "", OPEN_FILTER)
         if path:
             self._open(Path(path))
 

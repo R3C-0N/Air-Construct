@@ -18,7 +18,8 @@ case.yaml ──> mesh.py ──> foam/writer.py ──> runner.py ──> resul
 
 - `airconstruct/case.py`: the case model (YAML), single source of truth.
 - `airconstruct/materials.py`: material library.
-- `airconstruct/mesh.py`: multi-region mesh from axis-aligned boxes.
+- `airconstruct/mesh.py`: multi-region mesh from axis-aligned boxes (and imported shapes).
+- `airconstruct/cad.py`: CAD import (STL, STEP), shapes stored in the case, voxelization.
 - `airconstruct/foam/`: OpenFOAM dictionary writer and case setup.
 - `airconstruct/runner.py`: execution (Linux native, Windows through WSL2).
 - `airconstruct/results.py`: post-processing and report.
@@ -134,6 +135,23 @@ run or after; `Summary.probes` holds the last values.
 (or `cell_size`) over the component, growing back to the bulk size over `margin`
 (default 3 bulk cells) with graded blockMesh segments. The grid stays structured, so
 the refinement is a slab through the whole enclosure along each axis.
+
+## CAD import (STEP, STL)
+
+Modèle tab > *Importer un fichier CAO…*, the *Importer un fichier CAO* template of
+*Nouveau projet*, or Fichier > Ouvrir on a `.step` / `.stp` / `.stl` file. Each body
+of the file becomes a solid part, at its place (an assembly keeps its layout). STL has
+no unit: the dialog asks (mm by default) and can split a single STL into its closed
+shells; STEP gives its own unit and needs the `cascadio` package (OpenCascade,
+installed with the `ui` extra, or `pip install "airconstruct[cad]"`).
+
+The shape is stored in the case file (`shape.data`: float32 triangles, zlib, base64)
+and fitted onto the part's `box`, so moving or resizing the box moves or stretches it.
+The mesh stays the structured grid: the part gets the cells of its box whose centre
+is inside the surface (a staircase of the real shape, finer with the precision; see the
+mesh cut in the Volume d'air tab). A surface that is not closed may be filled wrongly:
+the import dialog says which. *Remplacer par sa boîte* in the inspector turns the part
+back into a plain block.
 
 ## Run control and live results
 
