@@ -4,9 +4,9 @@ Owned by: workstream "validation".
 
 Two kinds of checks:
 
-- Conservation checks, valid for any case with adiabatic enclosure walls:
-  the outlet mass flow equals the inlet one, and the heat carried away by the air,
-  m_dot * cp * (T_out - T_in), equals the dissipated power. These are exact at
+- Conservation checks, valid for any case: the outlet mass flow equals the inlet one,
+  and the heat carried away by the air, m_dot * cp * (T_out - T_in), plus the heat
+  lost through the enclosure walls equals the dissipated power. These are exact at
   steady state, so their tolerance is tight.
 - Physics checks for the "heated blocks in a channel" case
   (validation/heated_blocks/): mirror-symmetric blocks have the same temperature,
@@ -51,11 +51,12 @@ class Check:
 
 
 def inlet_mass_flow(case: Case) -> float:
-    """Mass flow through the inlets [kg/s], ideal gas at ambient pressure and inlet T."""
+    """Imposed mass flow through the inlets [kg/s], ideal gas at ambient pressure and
+    inlet T. Free vents and fans with a curve have no imposed flow and count as 0."""
     gas = GASES[case.fluid]
     total = 0.0
     for o in case.openings:
-        if o.kind != OpeningKind.inlet:
+        if o.kind != OpeningKind.inlet or not o.fixed_flow:
             continue
         t = o.temperature if o.temperature is not None else case.ambient_temperature
         rho = case.ambient_pressure * gas.mol_weight * 1e-3 / (R_GAS * (t + KELVIN))
@@ -91,19 +92,25 @@ def flat_plate_h(case: Case, c: Component, u: float, t_film_c: float) -> float:
 def conservation_checks(case: Case, summary, mass_tol: float = 0.005,
                         energy_tol: float = 0.02) -> list[Check]:
     """Mass and energy balance (relative tolerances)."""
-    m_in = inlet_mass_flow(case)
     imb = getattr(summary, "mass_imbalance", float("nan"))
-    checks = [
-        Check("mass balance: outlet / inlet mass flow", 1.0 + imb, 1.0, mass_tol),
-        Check("inlet mass flow / rho U A", summary.mass_flow_kg_s / m_in, 1.0, mass_tol, "",
-              f"rho U A = {m_in * 1e3:.4f} g/s"),
-    ]
+    checks = [Check("mass balance: outlet / inlet mass flow", 1.0 + imb, 1.0, mass_tol)]
+    inlets = [o for o in case.openings if o.kind == OpeningKind.inlet]
+    if all(o.fixed_flow for o in inlets):
+        m_in = inlet_mass_flow(case)
+        checks.append(Check("inlet mass flow / rho U A", summary.mass_flow_kg_s / m_in, 1.0,
+                            mass_tol, "", f"rho U A = {m_in * 1e3:.4f} g/s"))
+    else:  # the flow rate is a result (fan curve, free vents)
+        m_in = summary.mass_flow_kg_s
     power = summary.total_power_w
     if power > 0:
-        checks.append(Check("energy balance: heat to air / power", summary.heat_to_air_w / power,
-                            1.0, energy_tol, "", f"{power:.2f} W dissipated"))
+        walls = getattr(summary, "heat_through_walls_w", 0.0)
+        name = "energy balance: (heat to air + walls) / power" if walls else \
+            "energy balance: heat to air / power"
+        checks.append(Check(name, (summary.heat_to_air_w + walls) / power,
+                            1.0, energy_tol, "", f"{power:.2f} W dissipated"
+                            + (f", {walls:.2f} W through the walls" if walls else "")))
         gas = GASES[case.fluid]
-        rise = power / (m_in * gas.cp)
+        rise = (power - walls) / (m_in * gas.cp)
         t_in = summary.inlet_t_mean_c
         checks.append(Check("outlet temperature rise P/(m_dot cp)",
                             summary.outlet_t_mean_c - t_in, rise, energy_tol * rise, "K"))

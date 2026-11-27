@@ -72,6 +72,9 @@ def self_test() -> int:
 
     report.append(f"geometry: {len(geometry_items(case_obj))} scene items")
     win = ui_app.MainWindow()
+    report.append(f"font: {qapp.font().family()}")
+    if qapp.font().family() != "Inter":
+        raise RuntimeError("the Inter font of the theme is missing from the bundle")
     win.show()
     QTimer.singleShot(1500, qapp.quit)
     qapp.exec()

@@ -12,7 +12,16 @@ from __future__ import annotations
 
 import dataclasses
 
-from PySide6.QtWidgets import QHBoxLayout, QStackedWidget, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QFrame,
+    QHBoxLayout,
+    QStackedWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .selection import Selection
 from .view import CAMERAS, SceneItem, SceneView
@@ -33,12 +42,17 @@ def highlight_items(items: list[SceneItem], keys: list[str]) -> list[SceneItem]:
             out.append(dataclasses.replace(it, color=HIGHLIGHT, kwargs={**kw, "line_width": 3}))
         else:
             kw.update(show_edges=True, edge_color=HIGHLIGHT, line_width=3)
-            out.append(dataclasses.replace(it, kwargs=kw, opacity=max(it.opacity, 0.8)))
+            out.append(dataclasses.replace(it, kwargs=kw, opacity=max(it.opacity, it.highlight_opacity)))
     return out
 
 
 class Viewport(QWidget):
-    """SceneView + camera buttons + a slot for the active tab's toolbar."""
+    """SceneView + camera buttons + a slot for the active tab's toolbar.
+
+    ``redrawn`` is emitted after every redraw: a tab that adds widgets to the scene
+    (move/resize handles) re-adds them then."""
+
+    redrawn = Signal()
 
     def __init__(self, selection: Selection, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -46,30 +60,47 @@ class Viewport(QWidget):
         self.scene = SceneView()
         self.items: list[SceneItem] = []  # as given by the tab, before highlighting
 
+        # the active tab's toolbar, on a card above the view (hidden when none)
+        self.toolbar_card = QFrame()
+        self.toolbar_card.setObjectName("card")
+        tl = QHBoxLayout(self.toolbar_card)
+        tl.setContentsMargins(8, 4, 8, 4)
         self.tab_toolbars = QStackedWidget()
         self.tab_toolbars.addWidget(QWidget())  # empty slot
-        bar = QHBoxLayout()
-        bar.setContentsMargins(4, 2, 4, 2)
-        bar.addWidget(self.tab_toolbars, 1)
+        tl.addWidget(self.tab_toolbars)
+        self.toolbar_card.setVisible(False)
+
+        # camera presets: a card the window places under the view (bottom left)
+        self.camera_card = QFrame()
+        self.camera_card.setObjectName("card")
+        cl = QHBoxLayout(self.camera_card)
+        cl.setContentsMargins(4, 4, 4, 4)
+        cl.setSpacing(2)
         self.camera_buttons: dict[str, QToolButton] = {}
+        group = QButtonGroup(self)
         for key, label in CAMERAS.items():
             b = QToolButton()
             b.setText(label)
             b.setToolTip(f"Vue {label.lower()}")
+            b.setCheckable(True)
+            b.setProperty("kind", "segment")
             b.clicked.connect(lambda _=False, k=key: self.scene.set_camera(k))
-            bar.addWidget(b)
+            group.addButton(b)
+            cl.addWidget(b)
             self.camera_buttons[key] = b
+        self.camera_buttons["iso"].setChecked(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        layout.addLayout(bar)
+        layout.setSpacing(8)
+        layout.addWidget(self.toolbar_card)
         layout.addWidget(self.scene, 1)
 
         self.scene.picked.connect(self._on_picked)
         selection.changed.connect(lambda _keys: self._redraw())
 
     def set_tab_toolbar(self, widget: QWidget | None) -> None:
+        self.toolbar_card.setVisible(widget is not None)
         if widget is None:
             self.tab_toolbars.setCurrentIndex(0)
             return
@@ -81,8 +112,27 @@ class Viewport(QWidget):
         self.items = list(items)
         self._redraw(reset_camera)
 
+    def bounds_of(self, keys) -> tuple[float, ...] | None:
+        """Union of the bounds of the drawn items with these selection keys."""
+        wanted = set(keys)
+        boxes = [it.mesh.bounds for it in self.items if it.key in wanted]
+        if not boxes:
+            return None
+        return (min(b[0] for b in boxes), max(b[1] for b in boxes),
+                min(b[2] for b in boxes), max(b[3] for b in boxes),
+                min(b[4] for b in boxes), max(b[5] for b in boxes))
+
+    def frame(self, keys=None) -> tuple[float, ...] | None:
+        """Point the camera at the objects ``keys`` (default: the selection).
+        Returns the framed bounds, or None when none of them is drawn."""
+        bounds = self.bounds_of(self.selection.keys if keys is None else keys)
+        if bounds is not None:
+            self.scene.frame_bounds(bounds)
+        return bounds
+
     def _redraw(self, reset_camera: bool = False) -> None:
         self.scene.draw(highlight_items(self.items, self.selection.keys), reset_camera)
+        self.redrawn.emit()
 
     def _on_picked(self, key, additive: bool) -> None:
         self.selection.select(key, additive)

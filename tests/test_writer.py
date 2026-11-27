@@ -21,6 +21,8 @@ def test_case_files(tmp_path):
     for f in ["U", "p", "p_rgh", "T", "k", "omega", "nut", "alphat"]:
         assert (tmp_path / "0/air" / f).exists()
     assert "frozenFlow      false;" in (tmp_path / "system/air/fvSolution").read_text()
+    for solid in case.solid_regions:  # every solid gets its own solver settings
+        assert "SIMPLE" in (tmp_path / "system" / solid / "fvSolution").read_text()
 
 
 def test_laminar_has_no_turbulence_fields(tmp_path):
@@ -63,3 +65,14 @@ def test_residual_parser():
     assert p.flow_converged()  # solid h residual is ignored on purpose
     assert p.temperatures_stable()
     assert round(p.temperatures_c()["cpu"][1], 2) == 57.35
+
+
+def test_custom_material_reaches_solver_and_estimate(tmp_path):
+    data = Case.load(EXAMPLE).model_dump(mode="json")
+    data["materials"] = [{"name": "pad", "kappa": 7.5, "rho": 1234.0, "cp": 567.0}]
+    data["components"][0]["material"] = "pad"
+    case = Case.model_validate(data)
+    write_case_setup(case, tmp_path)
+    tp = (tmp_path / "constant/board/thermophysicalProperties").read_text()
+    assert "7.5" in tp and "1234" in tp and "567" in tp
+    assert estimate_temperatures(case)["cpu"] > case.ambient_temperature

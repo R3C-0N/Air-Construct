@@ -32,7 +32,9 @@ def test_version(launcher, monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("AIRCONSTRUCT_SELFTEST_LOG", str(log))
     monkeypatch.setattr(sys, "argv", ["Air-Construct", "--version"])
     assert launcher.main() == 0
-    assert "Air-Construct 0." in capsys.readouterr().out
+    from airconstruct import __version__
+
+    assert capsys.readouterr().out == f"Air-Construct {__version__}\n"
     assert log.read_text().startswith("Air-Construct ")
 
 

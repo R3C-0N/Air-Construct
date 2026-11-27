@@ -94,6 +94,8 @@ class Project(QObject):
     path_changed = Signal()
     results_changed = Signal()  # a run finished or results were cleared
     stale_changed = Signal(bool)  # results no longer match the model
+    lock_changed = Signal(bool)  # the model is locked (a run is going on) or unlocked
+    edit_refused = Signal(str)  # an edit was refused because the model is locked: why
 
     def __init__(self, data: dict | None = None, path: Path | None = None,
                  parent: QObject | None = None) -> None:
@@ -108,6 +110,8 @@ class Project(QObject):
         self._results: RunRecord | None = None
         self._stale = False
         self._last_valid: Case | None = None
+        self._locked = False
+        self._lock_reason = ""
 
     def _on_clean_changed(self, clean: bool) -> None:
         self.dirty_changed.emit(not clean)
@@ -174,6 +178,9 @@ class Project(QObject):
     def set_data(self, label: str, data: dict, merge_key: str | None = None) -> bool:
         if data == self._data:
             return False
+        if self._locked and physics_part(data) != physics_part(self._data):
+            self.edit_refused.emit(self._lock_reason)
+            return False
         self.undo_stack.push(_EditCommand(self, label, copy.deepcopy(self._data),
                                           copy.deepcopy(data), merge_key))
         return True
@@ -183,6 +190,24 @@ class Project(QObject):
         self._validated = False
         self.changed.emit()
         self._update_stale()
+
+    # ------------------------------------------------------------------ lock
+    @property
+    def locked(self) -> bool:
+        """True while a run uses the model: edits of the physics (everything but
+        ``data["ui"]``) are refused, undo/redo is off."""
+        return self._locked
+
+    @property
+    def lock_reason(self) -> str:
+        return self._lock_reason
+
+    def set_locked(self, locked: bool, reason: str = "") -> None:
+        locked = bool(locked)
+        self._lock_reason = reason if locked else ""
+        if locked != self._locked:
+            self._locked = locked
+            self.lock_changed.emit(locked)
 
     # ------------------------------------------------------------------ files
     @property

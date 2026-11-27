@@ -1,9 +1,14 @@
-name: CI
+name: CI complète
+
+# Full CI: unit tests on Linux + Windows and real OpenFOAM simulations with the
+# validation report. Runs only when work reaches `main` (a finished workstream merged
+# from `develop`). Day-to-day branches get the fast CI (ci-fast.yml) instead.
 
 on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:

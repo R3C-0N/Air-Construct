@@ -21,9 +21,20 @@ def qapp(_app):
     widgets left to Python's garbage collector at interpreter exit can segfault."""
     from PySide6.QtCore import QCoreApplication, QEvent
     from PySide6.QtWidgets import QApplication
+    from shiboken6 import isValid
 
     yield _app
     for w in QApplication.topLevelWidgets():
+        if not isValid(w):  # already deleted by the test (closed with its parent)
+            continue
+        if w.parent() is not None:
+            # popups (menus, combo box lists) go with their parent; deleting them on
+            # their own first crashes with pyqtgraph, which keeps references to its menus
+            continue
+        runner = getattr(w, "runner", None)
+        if runner is not None and runner.running:  # a failed test left a run going
+            runner.stop()
+            runner.wait(10000)
         if hasattr(w, "confirm_discard"):
             w.confirm_discard = lambda: True  # never block on "save changes?"
         w.close()

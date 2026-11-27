@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from .case import Case, OpeningKind
+from .foam.writer import opening_p0
 from .materials import GASES
 
 KELVIN = 273.15
@@ -49,6 +50,133 @@ class ComponentResult:
     power_w: float
     t_max_c: float
     t_mean_c: float
+    t_min_c: float = float("nan")
+
+
+@dataclass
+class OpeningResult:
+    """Flow through one opening. mass_flow_kg_s > 0 means into the enclosure."""
+
+    name: str
+    kind: str  # "inlet" | "outlet"
+    area_m2: float
+    mass_flow_kg_s: float = float("nan")
+    t_mean_c: float = float("nan")  # flux weighted
+    velocity_mean: float = float("nan")  # mean normal speed [m/s]
+    p_static_pa: float = float("nan")  # area mean of p_rgh (or p), gauge vs ambient
+    p_total_pa: float = float("nan")  # flux weighted static + dynamic, gauge vs ambient
+    heat_w: float = float("nan")  # enthalpy carried out (> 0) relative to the inlet air
+
+
+@dataclass
+class HeatFlow:
+    """Net heat flow [W] from `source` to `target` (always >= 0).
+
+    Nodes: a component name, "air", "walls" (the enclosure walls) or an outlet name.
+    kind: "conduction" (solid to solid), "convection" (solid to air), "wall" (to the
+    enclosure walls) or "advection" (carried out by the air through an opening)."""
+
+    source: str
+    target: str
+    watts: float
+    kind: str
+
+
+@dataclass
+class PartBalance:
+    """Where the heat of one component goes [W]. Positive = leaving the part."""
+
+    name: str
+    power_w: float
+    to_air_w: float = 0.0
+    to_walls_w: float = 0.0
+    to_parts_w: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def out_w(self) -> float:
+        return self.to_air_w + self.to_walls_w + sum(self.to_parts_w.values())
+
+    @property
+    def residual_w(self) -> float:
+        """power - heat leaving: zero once the part's temperature has converged."""
+        return self.power_w - self.out_w
+
+
+@dataclass
+class EnergyBalance:
+    """Detailed steady-state energy balance, computed from the solver's own face
+    fluxes: conduction k (T_face - T_cell) / d on every solid patch, k_eff (T_face -
+    T_cell) / d on the air walls, m_dot cp (T - T_in) through the openings."""
+
+    parts: list[PartBalance] = field(default_factory=list)
+    air_to_openings_w: dict[str, float] = field(default_factory=dict)
+    air_to_walls_w: float = 0.0
+    total_power_w: float = 0.0
+    flows: list[HeatFlow] = field(default_factory=list)
+
+    @property
+    def heat_out_w(self) -> float:
+        """Heat leaving the enclosure: through the openings and through the walls."""
+        return (sum(self.air_to_openings_w.values()) + self.air_to_walls_w
+                + sum(p.to_walls_w for p in self.parts))
+
+    @property
+    def residual_w(self) -> float:
+        """Dissipated power not accounted for (not converged yet when large)."""
+        return self.total_power_w - self.heat_out_w
+
+    @property
+    def error(self) -> float:
+        return self.residual_w / self.total_power_w if self.total_power_w > 0 else float("nan")
+
+    def to_sankey(self, min_w: float | None = None) -> dict:
+        """{"nodes": [{"id", "label", "kind", "power_w"}], "links": [{"source", "target",
+        "value", "kind"}]}, ready for a Sankey chart (d3-sankey, ECharts, Plotly).
+
+        Node kinds: "part", "air", "walls", "opening", "residual". Links are net flows per
+        pair of nodes [W]; flows under min_w (default 0.1 % of the power) are left out. A
+        "residual" link closes the balance while the run is not fully converged."""
+        if min_w is None:
+            min_w = 1e-3 * self.total_power_w
+        links = [{"source": f.source, "target": f.target, "value": f.watts, "kind": f.kind}
+                 for f in self.flows if f.watts > min_w]
+        res = self.residual_w
+        if abs(res) > max(min_w, 1e-9):
+            src, dst = ("air", "residual") if res > 0 else ("residual", "air")
+            links.append({"source": src, "target": dst, "value": abs(res), "kind": "residual"})
+        power = {p.name: p.power_w for p in self.parts}
+        kinds = {"air": "air", "walls": "walls", "residual": "residual"}
+        kinds.update({n: "opening" for n in self.air_to_openings_w})
+        kinds.update({n: "part" for n in power})
+        used = dict.fromkeys(n for link in links for n in (link["source"], link["target"]))
+        nodes = [{"id": n, "label": n, "kind": kinds.get(n, "part"), "power_w": power.get(n, 0.0)}
+                 for n in used]
+        return {"nodes": nodes, "links": links}
+
+
+@dataclass
+class FanResult:
+    """Operating point of a fan: the flow it delivers and the pressure rise it gives.
+
+    For a fan with a curve, pressure_rise_pa is the curve read at the simulated flow
+    rate (the solver keeps the fan on its curve). For a fan with an imposed flow rate,
+    it is the static pressure the system needs: mean p_rgh on the fan minus ambient
+    for an intake fan, ambient minus it for an exhaust fan."""
+
+    name: str
+    flow_rate_m3_s: float
+    pressure_rise_pa: float
+    direction: str  # "in" or "out"
+
+
+@dataclass
+class ProbeResult:
+    """Last sample of a probe (see probes.read_probes for the whole history)."""
+
+    name: str
+    region: str
+    t_c: float
+    speed: float  # [m/s], nan in a solid
 
 
 @dataclass
@@ -66,12 +194,25 @@ class Summary:
     mass_imbalance: float = float("nan")  # (outlet - inlet) / inlet mass flow
     heat_to_air_w: float = float("nan")  # mass_flow * cp * (T_out - T_in)
     total_power_w: float = 0.0
-    energy_balance_error: float = float("nan")  # (heat_to_air - power) / power
+    energy_balance_error: float = float("nan")  # (heat_to_air + walls - power) / power
     pressure_field: str = "p_rgh"
     warnings: list[str] = field(default_factory=list)
+    fans: list[FanResult] = field(default_factory=list)
+    pressure_drop_total_pa: float = float("nan")  # inlet - outlet total pressure
+    openings: list[OpeningResult] = field(default_factory=list)
+    energy: EnergyBalance | None = None
+    heat_through_walls_w: float = 0.0  # leaving through the enclosure walls (0 if adiabatic)
+    probes: list[ProbeResult] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if self.energy is not None:  # derived numbers and the Sankey links, for the UI
+            e = d["energy"]
+            e.update(heat_out_w=self.energy.heat_out_w, residual_w=self.energy.residual_w,
+                     error=self.energy.error, sankey=self.energy.to_sankey())
+            for pd, p in zip(e["parts"], self.energy.parts):
+                pd.update(out_w=p.out_w, residual_w=p.residual_w)
+        return d
 
     def hottest(self) -> ComponentResult | None:
         valid = [c for c in self.components if np.isfinite(c.t_max_c)]
@@ -298,6 +439,34 @@ def _mass_flow(patches: dict, names: list[str], molw: float) -> float | None:
     return total if found else None
 
 
+SIGMA = 5.670374419e-8  # Stefan-Boltzmann [W/m2/K4]
+
+
+def wall_heat_loss(case: Case, blocks: dict) -> float:
+    """Heat [W] leaving through the enclosure walls, from the inner wall temperature of
+    every region (air and solids touching the walls). Same law as OpenFOAM's
+    externalWallHeatFluxTemperature in coefficient mode:
+    q = (T_w - T_a) / (1 / (h + h_rad) + t / kappa), h_rad = eps sigma (T_w^2 + T_a^2)(T_w + T_a)."""
+    from .case import WallMode
+    from .materials import SOLIDS
+
+    total = 0.0
+    for name, faces in case.wall_patches().items():
+        w = case.walls.for_face(faces[0])
+        if w.mode != WallMode.exchange:
+            continue
+        ta = (w.t_external if w.t_external is not None else case.ambient_temperature) + KELVIN
+        r_wall = w.thickness / SOLIDS[w.material].kappa
+        for b in blocks.values():
+            poly = b["patches"].get(name)
+            if poly is None or "T" not in poly.cell_data:
+                continue
+            tw = np.asarray(poly.cell_data["T"], dtype=float)
+            h = w.h_external + w.emissivity * SIGMA * (tw**2 + ta**2) * (tw + ta)
+            total += float(np.sum(_areas(poly) * (tw - ta) / (1.0 / h + r_wall)))
+    return total
+
+
 def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
     t, blocks = _read_blocks(case_dir, time)
     warnings: list[str] = []
@@ -316,7 +485,7 @@ def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
             continue
         comps.append(ComponentResult(
             c.name, c.power, float(T.max()) - KELVIN,
-            _wmean(T, _volumes(b["internal"])) - KELVIN))
+            _wmean(T, _volumes(b["internal"])) - KELVIN, float(T.min()) - KELVIN))
 
     Ta = _cell(air, "T")
     U = _cell(air, "U")
@@ -365,17 +534,303 @@ def summarize(case: Case, case_dir: Path, time: float | None = None) -> Summary:
     mdot = mdot if mdot is not None else float("nan")
     q_air = mdot * gas.cp * (t_out_c - t_in_c)
     power = float(sum(c.power for c in case.components))
-    err = (q_air - power) / power if power > 0 else float("nan")
+    q_walls = wall_heat_loss(case, blocks)
+    err = (q_air + q_walls - power) / power if power > 0 else float("nan")
     if power > 0 and np.isfinite(err) and abs(err) > 0.2:
         warnings.append(
-            f"energy balance off by {err:+.0%}: air carries {q_air:.2f} W for {power:.2f} W "
-            "dissipated (not converged yet, or heat leaves through the walls)")
+            f"energy balance off by {err:+.0%}: air carries {q_air:.2f} W and the walls "
+            f"{q_walls:.2f} W for {power:.2f} W dissipated (not converged yet?)")
+
+    fans = []
+    for o in case.openings:
+        if o.fan is None:
+            continue
+        fr = _flux_stats(case_dir, t, [o.name])
+        if fr is not None:
+            rho = case.ambient_pressure * gas.mol_weight * 1e-3 / (R_GAS * fr[1])
+            q = fr[0] / rho
+        else:  # no face fluxes written: rebuild the flow from the boundary velocity
+            m = _mass_flow(patches, [o.name], gas.mol_weight)
+            t_f = _patch_stats(patches, [o.name], "T")
+            if m is not None and t_f is not None:
+                q = m * R_GAS * t_f / (case.ambient_pressure * gas.mol_weight * 1e-3)
+            else:
+                q = float("nan")
+        if o.fan.curve is not None:
+            dp = o.fan.pressure_at(q) if np.isfinite(q) else float("nan")
+        else:
+            p_fan = _patch_stats(patches, [o.name], pfield)
+            p_amb = opening_p0(case, o) if pfield == "p_rgh" else case.ambient_pressure
+            if p_fan is None:
+                dp = float("nan")
+            else:
+                dp = p_fan - p_amb if o.kind == OpeningKind.inlet else p_amb - p_fan
+        fans.append(FanResult(o.name, q, dp, "in" if o.kind == OpeningKind.inlet else "out"))
+    t_ref = (t_in_c if np.isfinite(t_in_c) else case.ambient_temperature) + KELVIN
+    openings = _openings(case, case_dir, t, patches, pfield, t_ref)
+    dp_total = float("nan")
+    pt = {k: [(o.p_total_pa, abs(o.mass_flow_kg_s)) for o in openings
+              if o.kind == k and np.isfinite(o.p_total_pa)] for k in ("inlet", "outlet")}
+    if pt["inlet"] and pt["outlet"]:
+        def mean(v):
+            w = np.array([b for _, b in v])
+            return _wmean(np.array([a for a, _ in v]), w if w.sum() > 0 else np.ones(len(v)))
+        dp_total = mean(pt["inlet"]) - mean(pt["outlet"])
+    try:
+        energy = energy_balance(case, case_dir, blocks, t, openings)
+    except (ValueError, KeyError, IndexError) as e:  # unexpected mesh layout
+        energy = None
+        warnings.append(f"detailed energy balance not available: {e}")
+    if energy is None and not any("energy balance not" in w for w in warnings):
+        warnings.append("detailed energy balance not available (mesh files not readable)")
+    elif energy is not None and power > 0:
+        for part in energy.parts:
+            if abs(part.residual_w) > max(0.05 * part.power_w, 0.02 * power):
+                warnings.append(
+                    f"component {part.name!r}: {part.out_w:.2f} W leave it for {part.power_w:.2f} W "
+                    "dissipated (its temperature has not converged)")
+
+    if energy is not None and any(
+            case.walls.for_face(f[0]).mode == "exchange" for f in case.wall_patches().values()):
+        # the solver's own wall fluxes, consistent with the per-part balance
+        q_walls = energy.air_to_walls_w + sum(p.to_walls_w for p in energy.parts)
+        err = (q_air + q_walls - power) / power if power > 0 else float("nan")
+
+    from .probes import read_probes
+
+    probes = []
+    for name, ser in read_probes(case, case_dir).items():
+        if not ser.t_c:
+            warnings.append(f"probe {name!r}: no sample written (outside the {ser.region} mesh?)")
+        probes.append(ProbeResult(name, ser.region, *ser.last()))
 
     return Summary(
+        probes=probes, fans=fans, heat_through_walls_w=q_walls,
         components=comps, air_t_max_c=air_t_max, air_v_max=v_max, pressure_drop_pa=dp,
         outlet_t_mean_c=t_out_c, time=t, inlet_t_mean_c=t_in_c, air_t_mean_c=air_t_mean,
         mass_flow_kg_s=mdot, mass_imbalance=imbalance, heat_to_air_w=q_air, total_power_w=power,
-        energy_balance_error=err, pressure_field=pfield, warnings=warnings)
+        energy_balance_error=err, pressure_field=pfield, warnings=warnings,
+        pressure_drop_total_pa=dp_total, openings=openings, energy=energy)
+
+
+# --------------------------------------------------------------------------- balance
+
+
+def _foam_list(path: Path) -> np.ndarray | None:
+    """Integer list of an ASCII OpenFOAM file (polyMesh/owner), None if unreadable."""
+    import gzip
+    import re
+
+    if not path.exists() and path.with_suffix(".gz").exists():
+        path = path.with_suffix(".gz")
+    try:
+        raw = gzip.decompress(path.read_bytes()) if path.suffix == ".gz" else path.read_bytes()
+    except OSError:
+        return None
+    if b"format      binary" in raw[:2000] or re.search(rb"format\s+binary", raw[:2000]):
+        return None
+    txt = raw.decode(errors="replace")
+    head = txt.find("}", txt.find("FoamFile"))
+    m = re.compile(r"(\d+)\s*\(").search(txt, head + 1)
+    if not m:
+        return None
+    end = txt.find(")", m.end())
+    arr = np.array(txt[m.end():end].split(), dtype=np.int64)
+    return arr if len(arr) == int(m.group(1)) else None
+
+
+def _patch_ranges(boundary: Path) -> dict[str, tuple[int, int]]:
+    """{patch: (startFace, nFaces)} from a polyMesh/boundary file."""
+    import re
+
+    try:
+        txt = boundary.read_text(errors="replace")
+    except OSError:
+        return {}
+    txt = txt[txt.find("}", txt.find("FoamFile")) + 1:]
+    out = {}
+    for m in re.finditer(r"([A-Za-z_][\w.:-]*)\s*\{([^{}]*)\}", txt):
+        nf = re.search(r"\bnFaces\s+(\d+)", m.group(2))
+        sf = re.search(r"\bstartFace\s+(\d+)", m.group(2))
+        if nf and sf:
+            out[m.group(1)] = (int(sf.group(1)), int(nf.group(1)))
+    return out
+
+
+def _solid_kappa(case: Case, case_dir: Path, region: str) -> float:
+    """Conductivity of a solid region: from its thermophysicalProperties when written
+    (what the solver used), else from the material library."""
+    import re
+
+    f = Path(case_dir) / "constant" / region / "thermophysicalProperties"
+    try:
+        m = re.search(r"\bkappa\s+(" + _NUM + r")\s*;", f.read_text(errors="replace"))
+        if m:
+            return float(m.group(1))
+    except OSError:
+        pass
+    comp = next((c for c in case.components if c.name == region), None)
+    return case.solid(comp.material).kappa if comp else float("nan")
+
+
+def _normals(poly) -> np.ndarray:
+    """Face normals of a boundary patch (OpenFOAM orders boundary face points so that
+    the normal points out of the region)."""
+    n = poly.compute_normals(cell_normals=True, point_normals=False, auto_orient_normals=False,
+                             consistent_normals=False, split_vertices=False)
+    return np.asarray(n.cell_data["Normals"])
+
+
+def _wall_fluxes(case_dir: Path, region: str, block: dict, kappa) -> dict[str, float] | None:
+    """{patch: conducted heat INTO the region [W]} = sum k (T_face - T_cell) / d A, the
+    discretisation the solver itself uses on an orthogonal mesh. kappa(poly) gives the
+    face conductivity. None when the mesh files cannot be matched with the reader."""
+    mesh = Path(case_dir) / "constant" / region / "polyMesh"
+    owner = _foam_list(mesh / "owner")
+    ranges = _patch_ranges(mesh / "boundary")
+    grid = block["internal"]
+    T = _cell(grid, "T")
+    if owner is None or T is None or not ranges or int(owner.max()) + 1 != grid.n_cells:
+        return None
+    centres = np.asarray(grid.cell_centers().points)
+    out = {}
+    for name, poly in block["patches"].items():
+        if name not in ranges or "T" not in poly.cell_data:
+            continue
+        start, n = ranges[name]
+        if n != poly.n_cells:
+            return None
+        own = owner[start:start + n]
+        fc = np.asarray(poly.cell_centers().points)
+        d = np.abs(np.einsum("ij,ij->i", fc - centres[own], _normals(poly)))
+        d = np.where(d > 0, d, np.nan)
+        q = kappa(poly) * (np.asarray(poly.cell_data["T"]) - T[own]) / d * _areas(poly)
+        out[name] = float(np.nansum(q))
+    return out
+
+
+def _face_flux(case_dir: Path, t: float, name: str, poly, rho_default: float) -> np.ndarray:
+    """Outward face mass flux [kg/s] of an air patch: the solver's phi when written,
+    else rho U.n A."""
+    d = _time_dir(case_dir, "air", t)
+    phi = _patch_values(d / "phi", name) if d is not None else None
+    if isinstance(phi, np.ndarray) and len(phi) == poly.n_cells:
+        return phi
+    un = np.einsum("ij,ij->i", np.asarray(poly.cell_data["U"]), _normals(poly))
+    rho = np.asarray(poly.cell_data["rho"]) if "rho" in poly.cell_data else rho_default
+    return rho * un * _areas(poly)
+
+
+def _openings(case: Case, case_dir: Path, t: float, patches: dict, pfield: str,
+              t_ref_k: float) -> list[OpeningResult]:
+    gas = GASES[case.fluid]
+    rho0 = case.ambient_pressure * gas.mol_weight * 1e-3 / (R_GAS * (case.ambient_temperature
+                                                                     + KELVIN))
+    out = []
+    for o in case.openings:
+        r = OpeningResult(o.name, o.kind.value, o.area())
+        poly = patches.get(o.name)
+        out.append(r)
+        if poly is None or "U" not in poly.cell_data:
+            continue
+        a = _areas(poly)
+        r.area_m2 = float(a.sum())
+        phi = _face_flux(case_dir, t, o.name, poly, rho0)
+        w = np.abs(phi) if np.sum(np.abs(phi)) > 0 else a
+        r.mass_flow_kg_s = -float(np.sum(phi))
+        rho = (np.asarray(poly.cell_data["rho"]) if "rho" in poly.cell_data
+               else np.full(poly.n_cells, rho0))
+        r.velocity_mean = float(np.sum(np.abs(phi) / rho) / r.area_m2) if r.area_m2 else np.nan
+        if "T" in poly.cell_data:
+            T = np.asarray(poly.cell_data["T"])
+            r.t_mean_c = _wmean(T, w) - KELVIN
+            r.heat_w = float(np.sum(phi * gas.cp * (T - t_ref_k)))
+        if pfield in poly.cell_data:
+            ps = np.asarray(poly.cell_data[pfield]) - case.ambient_pressure
+            u2 = np.sum(np.asarray(poly.cell_data["U"]) ** 2, axis=1)
+            r.p_static_pa = _wmean(ps, a)
+            r.p_total_pa = _wmean(ps + 0.5 * rho * u2, w)
+    return out
+
+
+def energy_balance(case: Case, case_dir: Path, blocks: dict, t: float,
+                   openings: list[OpeningResult]) -> EnergyBalance | None:
+    """Detailed energy balance (see :class:`EnergyBalance`); None when the mesh files
+    cannot be read (binary or decomposed-only cases)."""
+    gas = GASES[case.fluid]
+    names = {c.name for c in case.components}
+    bal = EnergyBalance(total_power_w=float(sum(c.power for c in case.components)))
+    air = blocks.get(case.fluid_region)
+    q_air: dict[str, float] = {}
+    if air is not None:
+
+        def k_air(poly):
+            alphat = np.asarray(poly.cell_data["alphat"]) if "alphat" in poly.cell_data else 0.0
+            return gas.cp * (gas.mu / gas.pr + alphat)
+
+        q_air = _wall_fluxes(case_dir, case.fluid_region, air, k_air)
+        if q_air is None:
+            return None
+        opening_names = {o.name for o in case.openings}
+        for patch, q_in in q_air.items():
+            if patch.startswith(f"{case.fluid_region}_to_") or patch in opening_names:
+                continue
+            bal.air_to_walls_w += -q_in
+        for o in openings:
+            if np.isfinite(o.heat_w):  # plus conduction across the opening (tiny)
+                o.heat_w += -q_air.get(o.name, 0.0)
+                bal.air_to_openings_w[o.name] = o.heat_w
+    for c in case.components:
+        b = blocks.get(c.name)
+        part = PartBalance(c.name, c.power)
+        bal.parts.append(part)
+        if b is None:
+            continue
+        k = _solid_kappa(case, case_dir, c.name)
+        q = _wall_fluxes(case_dir, c.name, b, lambda poly, k=k: k)
+        if q is None:
+            return None
+        prefix = f"{c.name}_to_"
+        for patch, q_in in q.items():
+            other = patch[len(prefix):] if patch.startswith(prefix) else ""
+            if other == case.fluid_region:
+                # the air side: the solid side of a highly conductive part lags behind
+                # its neighbours in the partitioned coupling (several % on coarse meshes),
+                # while the air side adds up exactly to the heat leaving the outlets
+                part.to_air_w += q_air.get(f"{case.fluid_region}_to_{c.name}", -q_in)
+            elif other in names:
+                part.to_parts_w[other] = part.to_parts_w.get(other, 0.0) - q_in
+            else:
+                part.to_walls_w += -q_in
+    # solid to solid: the mean of both sides, so the two parts agree
+    by = {p.name: p for p in bal.parts}
+    for p in bal.parts:
+        for other, w in list(p.to_parts_w.items()):
+            back = by[other].to_parts_w.get(p.name) if other in by else None
+            if back is not None:
+                p.to_parts_w[other] = (w - back) / 2
+                by[other].to_parts_w[p.name] = -(w - back) / 2
+
+    # net flow per pair of nodes, in its positive direction
+    def add(src: str, dst: str, w: float, kind: str) -> None:
+        if not np.isfinite(w) or w == 0:
+            return
+        src, dst = (src, dst) if w > 0 else (dst, src)
+        bal.flows.append(HeatFlow(src, dst, abs(w), kind))
+
+    seen = set()
+    for p in bal.parts:
+        add(p.name, "air", p.to_air_w, "convection")
+        add(p.name, "walls", p.to_walls_w, "wall")
+        for other, w in p.to_parts_w.items():
+            pair = frozenset((p.name, other))
+            if pair not in seen:
+                seen.add(pair)
+                add(p.name, other, w, "conduction")
+    for name, w in bal.air_to_openings_w.items():
+        add("air", name, w, "advection")
+    add("air", "walls", bal.air_to_walls_w, "wall")
+    return bal
 
 
 # --------------------------------------------------------------------------- images
@@ -679,6 +1134,47 @@ def _fmt(v: float, nd: int = 1) -> str:
     return "n/a" if v is None or not np.isfinite(v) else f"{v:.{nd}f}"
 
 
+def _energy_html(s: Summary) -> str:
+    b = s.energy
+    if b is None:
+        return ""
+    e = html.escape
+    rows = []
+    for p in b.parts:
+        others = ", ".join(f"{e(n)} {w:+.2f}" for n, w in p.to_parts_w.items() if abs(w) >= 0.005)
+        rows.append(f"<tr><td>{e(p.name)}</td><td class=n>{_fmt(p.power_w, 2)}</td>"
+                    f"<td class=n>{_fmt(p.to_air_w, 2)}</td><td>{others or '-'}</td>"
+                    f"<td class=n>{_fmt(p.to_walls_w, 2)}</td>"
+                    f"<td class=n>{_fmt(p.residual_w, 2)}</td></tr>")
+    out = " · ".join(f"{e(n)} {_fmt(w, 2)} W" for n, w in b.air_to_openings_w.items())
+    return f"""<h2>Energy balance</h2>
+<table><tr><th>Component</th><th class=n>Power [W]</th><th class=n>To air [W]</th>
+<th>To other parts [W]</th><th class=n>To walls [W]</th><th class=n>Unbalanced [W]</th></tr>
+{''.join(rows)}</table>
+<p class=sub>Carried out by the air: {out or 'n/a'} · through the enclosure walls
+{_fmt(b.air_to_walls_w + sum(p.to_walls_w for p in b.parts), 2)} W ·
+not accounted for {_fmt(b.residual_w, 2)} W ({_fmt(100 * b.error, 1)} % of
+{_fmt(b.total_power_w, 2)} W).</p>"""
+
+
+def _openings_html(s: Summary) -> str:
+    if not s.openings:
+        return ""
+    e = html.escape
+    rows = "".join(
+        f"<tr><td>{e(o.name)}</td><td>{e(o.kind)}</td>"
+        f"<td class=n>{_fmt(o.mass_flow_kg_s * 1000, 3)}</td><td class=n>{_fmt(o.velocity_mean, 2)}</td>"
+        f"<td class=n>{_fmt(o.t_mean_c)}</td><td class=n>{_fmt(o.p_static_pa, 2)}</td>"
+        f"<td class=n>{_fmt(o.p_total_pa, 2)}</td></tr>" for o in s.openings)
+    return f"""<h2>Openings</h2>
+<table><tr><th>Opening</th><th>Kind</th><th class=n>Mass flow in [g/s]</th>
+<th class=n>Mean speed [m/s]</th><th class=n>T [°C]</th><th class=n>Static p [Pa]</th>
+<th class=n>Total p [Pa]</th></tr>{rows}</table>
+<p class=sub>Pressures are gauge, relative to the ambient pressure. Pressure drop inlet to
+outlet: {_fmt(s.pressure_drop_pa, 2)} Pa static ({e(s.pressure_field)}),
+{_fmt(s.pressure_drop_total_pa, 2)} Pa total.</p>"""
+
+
 def write_report(case: Case, case_dir: Path, out_dir: Path, images: list[Path] | None = None,
                  summary: Summary | None = None) -> Path:
     """HTML report (numbers + images). Returns its path. Images are embedded, so the
@@ -703,7 +1199,8 @@ def write_report(case: Case, case_dir: Path, out_dir: Path, images: list[Path] |
         ("Outlet air (mean)", f"{_fmt(s.outlet_t_mean_c)} °C",
          f"inlet {_fmt(s.inlet_t_mean_c)} °C"),
         ("Max air velocity", f"{_fmt(s.air_v_max, 2)} m/s", ""),
-        ("Pressure drop", f"{_fmt(s.pressure_drop_pa, 2)} Pa", f"from {s.pressure_field}"),
+        ("Pressure drop", f"{_fmt(s.pressure_drop_pa, 2)} Pa",
+         f"static ({s.pressure_field}), {_fmt(s.pressure_drop_total_pa, 2)} Pa total"),
         ("Energy balance", f"{_fmt(s.heat_to_air_w)} W",
          f"of {_fmt(s.total_power_w)} W dissipated ({_fmt(100 * s.energy_balance_error, 0)} %)"),
     ]
@@ -734,6 +1231,8 @@ generated {datetime.now().astimezone():%Y-%m-%d %H:%M}</p>
 {rows}</table>
 <p class=sub>Mass flow: {_fmt(s.mass_flow_kg_s * 1000, 3)} g/s
 (outlet vs inlet: {_fmt(100 * s.mass_imbalance, 1)} %).</p>
+{_energy_html(s)}
+{_openings_html(s)}
 <h2>Fields</h2>
 {''.join(imgs) or '<p>No images.</p>'}
 </body></html>

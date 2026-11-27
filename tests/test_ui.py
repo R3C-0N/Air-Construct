@@ -125,14 +125,13 @@ def test_window_run_with_mocks(qapp, tmp_path, settings):
                       load_regions_fn=lambda d: {}, estimate_fn=lambda c: 90.0)
     sim, res, model = win.tabs["simulation"], win.tabs["results"], win.tabs["model"]
     assert sim.run_button.isEnabled()
-    assert "2 min" in model.form.estimate_label.text()
     outcome = run_and_wait(qapp, win)
     assert outcome.success
     assert "Convergé" in sim.progress.format()
     assert res.results.table.rowCount() == 4
     assert res.results.table.item(0, 0).text() == "cpu"  # hottest first
     assert "fake solver start" in sim.log.toPlainText()
-    assert sim.run_button.isEnabled() and model.form.isEnabled()
+    assert sim.run_button.isEnabled() and model.library_buttons[0].isEnabled()
     assert not win.project.stale and res.banner.isHidden()
     win.close()
 
@@ -185,7 +184,7 @@ def test_quick_estimate_preview(qapp, tmp_path, settings):
     assert "Estimation rapide" in res.results.headline.text()
     assert res.results.table.rowCount() == 4
     assert res.results.table.item(0, 0).text() == "cpu"  # 15 W: hottest
-    t_cpu = float(res.results.table.item(0, 2).text())
+    t_cpu = float(res.results.table.item(0, 3).text().replace(",", "."))
     assert 25.0 < t_cpu < 300.0
     win.close()
 
@@ -214,9 +213,9 @@ def test_window_invalid_case_disables_run(qapp, tmp_path, settings):
     assert win.project.case is None
     assert not sim.run_button.isEnabled() and not win.run_action.isEnabled()
     assert not win.start_run()
-    assert "outlet" in sim.blocked_label.text()
+    assert "sortie" in sim.blocked_label.text()  # French alert text (alerts.CASE_MESSAGES)
     assert [a.tab for a in win.alerts.alerts] == ["air"]
-    assert win.tabs["air"]._badge.text() == "1"
+    assert win.tab_badge("air") == "1" and win.tab_badge("model") == ""
     assert win.status.alerts_button.text() == "1 alerte"
     win.project.undo_stack.undo()
     assert win.project.case is not None and sim.run_button.isEnabled()
@@ -231,7 +230,6 @@ def test_window_save_load(qapp, tmp_path, settings):
     assert win.state_label.text() == "enregistré"
     assert win.load_case(p)
     assert _close(win.project.case, Case.load(EXAMPLE))
-    assert _close(win.tabs["model"].form.to_case(), Case.load(EXAMPLE))
     assert win.recent_files()[0] == str(p.resolve())
     win.close()
 
@@ -270,14 +268,16 @@ def test_window_with_real_results_module(qapp, tmp_path, settings):
     assert outcome.success, outcome.errors
     res = win.tabs["results"]
     assert res.results.table.item(0, 0).text() == "cpu"
-    assert float(res.results.table.item(0, 2).text()) == pytest.approx(76.9, abs=0.5)
+    assert float(res.results.table.item(0, 3).text().replace(",", ".")) == pytest.approx(76.9, abs=0.5)
     assert set(outcome.regions) >= {"air", "cpu"}
     assert res.field_combo.isEnabled()
     win.goto_tab("results")
-    assert any(i.name == "air_slice" for i in win.viewport.items)  # result fields drawn
+    names = [i.name for i in win.viewport.items]
+    assert any(n.startswith("slice") and n.endswith(":air") for n in names)  # fields drawn
+    assert "part:cpu" in names
     res.geometry_button.setChecked(True)
     win.refresh_scene()
-    assert not any(i.name == "air_slice" for i in win.viewport.items)
+    assert not any(i.name.startswith("slice") for i in win.viewport.items)
     res.save_report()
     assert res.last_report is not None and res.last_report.exists()
     win.close()
@@ -325,28 +325,28 @@ def test_shell_has_five_tabs_and_swaps_panels(qapp, tmp_path, settings):
     win.goto_tab("simulation")
     assert win.current_tab is win.tabs["simulation"]
     assert win.right_stack.currentWidget() is win.tabs["simulation"].right_panel()
-    win.goto_tab("volume")  # no right panel: the stack is hidden
-    assert not win.right_stack.isVisibleTo(win)
+    win.goto_tab("volume")
+    assert win.right_stack.currentWidget() is win.tabs["volume"].right_panel()
     win.goto_tab("results")
     assert win.viewport.tab_toolbars.currentWidget() is win.tabs["results"].viewport_toolbar()
     win.close()
 
 
-def test_undo_redo_through_the_legacy_form(qapp, tmp_path, settings):
+def test_undo_redo_through_the_model_inspector(qapp, tmp_path, settings):
     win = make_window(tmp_path, settings)
-    form = win.tabs["model"].form
+    insp = win.tabs["model"].inspector
     assert not win.project.dirty
-    form.ambient_spin.setValue(35.0)
-    win.tabs["model"].binding.push()
-    assert win.project.case.ambient_temperature == 35.0
+    win.selection.set(["component:cpu"])
+    insp.power.edit.setText("12")
+    insp.power._commit()
+    assert win.project.case.components[1].power == 12.0
     assert win.project.dirty and win.state_label.text() == "modifié"
-    assert win.undo_action.isEnabled()
     win.undo_action.trigger()
-    assert win.project.case.ambient_temperature == 25.0
-    assert form.ambient_spin.value() == 25.0  # form follows the project
+    assert win.project.case.components[1].power == 15.0
+    assert insp.power.edit.text() == "15"  # the inspector follows the project
     assert not win.project.dirty
     win.redo_action.trigger()
-    assert form.ambient_spin.value() == 35.0
+    assert insp.power.edit.text() == "12"
     win.close()
 
 
@@ -413,7 +413,7 @@ def test_units_and_shortcuts(qapp, tmp_path, settings):
     win.units.set_temperature("K")
     assert win.status.units_button.text() == "m · K ▾"
     assert win.units.fmt_temperature(25.0) == "298,1 K"
-    assert "0.2 × 0.12" in win.tabs["model"].tree._items["enclosure"].text(0)
+    assert "0.2 × 0.12" in win.tabs["model"].tree._items["enclosure"].text(1)
     rows = dict(win.status.shortcut_rows())
     assert rows["Lancer le calcul"] == "Ctrl+R"
     assert "Ctrl+Z" in rows["Annuler"]
@@ -513,3 +513,20 @@ def test_validation_alerts_mapping():
     with pytest.raises(ValidationError) as e:
         Case.model_validate(data)
     assert {x.tab for x in validation_alerts(data, e.value)} == {"air"}
+
+
+def test_theme_font_and_step_badges(qapp, tmp_path, settings):
+    from airconstruct.ui.theme import COLORS, style_sheet
+
+    win = make_window(tmp_path, settings)
+    assert qapp.font().family() == "Inter"  # bundled font loaded
+    assert COLORS["accent"] in qapp.styleSheet() == style_sheet()
+    nav = win.tab_bar
+    assert nav.currentIndex() == 0 and nav.buttons[0].isChecked()
+    win.project.edit("no outlet", lambda d: d["openings"].pop(1))
+    air = nav.buttons[1]
+    assert air.badge.isVisibleTo(win) and COLORS["error"] in air.badge.styleSheet()
+    nav.setCurrentIndex(1)  # the active step shows its badge white on blue
+    assert win.current_tab is win.tabs["air"] and "white" in air.badge.styleSheet()
+    assert win.state_label.property("tone") == "warning"  # "modifié" pill
+    win.close()

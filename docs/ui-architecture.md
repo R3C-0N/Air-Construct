@@ -29,8 +29,9 @@ touching the same files.
 | `ui/units.py` | shell | `Units` (mm/m, °C/K) and formatting |
 | `ui/viewport.py`, `ui/view.py` | shell | the one 3D viewport, scene items, picking, highlight, camera presets |
 | `ui/run.py`, `ui/worker.py` | shell | `RunController` (start/stop/progress) around the background worker |
-| `ui/statusbar.py` | shell | alerts menu, units menu, shortcuts dialog |
-| `ui/widgets/` | shared | widgets several tabs use (`ObjectTree`); add new shared widgets here |
+| `ui/statusbar.py` | shell | status card: messages, alerts menu, units menu, shortcuts dialog |
+| `ui/theme.py`, `ui/fonts/` | shell | colours (`COLORS`), Inter font, the one style sheet |
+| `ui/widgets/` | shared | widgets several tabs use (`Card`, `ObjectTree`, `StepNav`, `ToggleSwitch`); add new shared widgets here |
 | `ui/tabs/base.py` | shell | `StepTab` base class |
 | `ui/tabs/__init__.py` | shell | `TAB_CLASSES`, the tab order |
 | `ui/tabs/model/` | thread Modèle | tab 1 |
@@ -38,7 +39,16 @@ touching the same files.
 | `ui/tabs/volume/` | thread Volume d'air | tab 3 |
 | `ui/tabs/simulation/` | thread Simulation | tab 4 |
 | `ui/tabs/results/` | thread Résultats | tab 5 |
-| `ui/form.py` | temporary | the old case form, shown by the Modèle tab until the tabs have their own editors |
+| `ui/form.py` | temporary | the old case form; no longer shown (the Modèle tab has its own editor), kept until the other tabs have theirs, then removed |
+
+The Modèle tab (`ui/tabs/model/`) is a model for the others: the operations are plain
+functions on the project data (`geometry.py`, tested without Qt), the panels only turn
+user input into `project.edit(...)` calls. It stores its UI metadata under
+`data["ui"]["model"]` (`groups`, `hidden`, `locked`, `kinds`), shows its move/resize
+handles with `plotter.add_box_widget` (re-added on `Viewport.redrawn`), and provides
+the "Nouveau projet" dialog the shell opens from Fichier > Nouveau
+(`MainWindow.ask_new_project`, replaceable in tests). A side panel made of several
+cards sets the Qt property `cards` so the shell does not wrap it in another card.
 
 A tab thread works inside its own `ui/tabs/<key>/` package (add as many modules as
 needed there) and its tests in `tests/test_tab_<key>.py`. If it needs something
@@ -66,6 +76,7 @@ class AirTab(StepTab):
     def actions(self): ...             # QActions with shortcuts, active while the tab is open
     def activated(self): ...           # tab opened
     def deactivated(self): ...         # another tab opened
+    def closing(self): ...             # the window closes: stop timers, free pyqtgraph scenes
 ```
 
 Call `self.scene_changed.emit()` when what `scene()` returns changes: the shell
@@ -98,10 +109,16 @@ the project through signals, not only in `activated()`.
 - Results: `project.results` is the last `RunRecord(outcome, case, data)` or
   `None`. `project.stale` is True when the model changed since that run (the
   Résultats tab shows the "version précédente du modèle" banner).
+- Lock: while a run of the open model goes on, `project.locked` is True (signal
+  `lock_changed(bool)`): edits of the physics are refused (`edit()` returns False and
+  `edit_refused(reason)` fires, the window shows the reason), edits under `data["ui"]`
+  still work, undo/redo is off and the Modèle, Air and Volume d'air steps say
+  "Verrouillé pendant le calcul" in their tooltip. Tabs that edit the model disable
+  their editors on `lock_changed`. The run controller sets it; tabs never do.
 
 **`ctx.selection`** (`Selection`): shared by the trees, the 3D view, inspectors and
 alerts. Keys are `"enclosure"`, `"component:<name>"`, `"opening:<name>"`; new object
-kinds use `"<kind>:<name>"`. `selection.keys`, `selection.current`,
+kinds use `"<kind>:<name>"` (the Air tab adds `"face:<face>"` and `"walls"`). `selection.keys`, `selection.current`,
 `selection.set(keys)`, `selection.select(key, additive)`, `selection.rename(old, new)`
 (call it when renaming an object), signal `changed(list)`. Deleted objects are
 dropped from the selection automatically.
@@ -110,8 +127,9 @@ dropped from the selection automatically.
 A tab describes the scene with `SceneItem`s (`view.py`); set `key` on an item to make
 it clickable and highlightable. `view.geometry_items(case)` and
 `view.result_items(case, regions, field)` build the standard scenes. Picking emits
-the item's key into the selection (Ctrl or Shift adds). `ctx.viewport.scene.plotter`
-is the pyvistaqt `QtInteractor` (None when 3D is disabled, as in tests) for widgets
+the item's key into the selection (Ctrl or Shift adds). `ctx.viewport.frame(keys=None)`
+points the camera at those objects (default: the selection) and returns their bounds.
+`ctx.viewport.scene.plotter` is the pyvistaqt `QtInteractor` (None when 3D is disabled, as in tests) for widgets
 such as move/resize handles.
 
 **`ctx.alerts`** (`AlertCenter`): `Alert(level, message, tab, target)`. Level
@@ -123,11 +141,22 @@ status bar count follow. Clicking an alert opens its tab and selects its `target
 `units.length_to_display(m)`, `units.length_from_display(v)`, `units.fmt_length(m)`,
 `units.fmt_temperature(c)`, `units.length_symbol`, signal `changed`. Data stays SI.
 
-**`ctx.runner`** (`RunController`): `start()`, `stop()`, `running`,
-`progress_value / progress_max / progress_text`, `last_residuals`, `log_lines`;
-signals `started`, `log(str)`, `stage(str)`, `residual(int, dict)`, `progress`,
-`finished(outcome)`, `running_changed(bool)`. The outcome is stored in
-`project.results`.
+**`ctx.runner`** (`RunController`): `start()`, `stop()` (clean: the partial result is
+kept), `resume()` / `can_resume() -> (ok, why)` (continue the last stopped or
+unconverged run, `runner.resume_case`), `running`, `progress_value / progress_max /
+progress_text`, `last_residuals`, `log_lines`, `case_dir`; live numbers: `history`
+(one `monitor.Progress` per iteration: residuals per region and field, min/mean/max
+temperature per region, heat to the air, openings), `iteration`, `phase`
+(`mesh | flow | energy | check | post`), `phase_iterations()` (counts that add up to
+`iteration`), `elapsed_s()`, `remaining_s()`; run queue: `enqueue(data, label,
+path=None)`, `queue` (`QueueItem`s), `waiting()`, `move_in_queue`, `remove_from_queue`,
+`start_queue()`, `queue_paused` (a stop pauses it). Signals `started`, `log(str)`,
+`stage(str)`, `residual(int, dict)`, `snapshot(Progress)`, `progress`,
+`finished(outcome)`, `running_changed(bool)`, `queue_changed`. The outcome
+(`RunOutcome`: `result`, `summary`, `regions`, `errors`, `stopped`, `resumed`,
+`backend_missing`, `diagnosis`) of the open model's runs is stored in
+`project.results`; a queued case read from another file keeps its outcome on its
+`QueueItem`.
 
 **`ctx.expert`** (`ExpertMode`): `expert.on`, signal `changed(bool)`. Show advanced
 settings only when on.
@@ -136,7 +165,35 @@ settings only when on.
 `write_report(...)`, `open_report`. Injected so tests run without OpenFOAM.
 
 **`ctx.goto_tab(key)`**, **`ctx.show_message(text)`**, **`ctx.work_dir()`**,
+**`ctx.open_project(path) -> bool`** (asks to save the current project first),
 **`ctx.settings`** (QSettings: prefix your keys with the tab key, e.g. `"results/cmap"`).
+
+## Look and feel (theme)
+
+The window follows the mockup's look: grey-blue ground (`#E7EAEF`), white rounded
+cards, Inter font, blue accent (`#1D4ED8`). It is set once for the whole app by
+`ui/theme.py` (`apply_theme`, called by the window). Tabs never hard-code colours or
+write their own style sheets, so every tab looks the same and the theme can change in
+one place:
+
+- Build each side panel from one or more `Card("Titre")` (`widgets/card.py`) and put
+  the content in `card.body`; a panel that is not a `Card` is wrapped in one. Several
+  cards on one side: `CardColumn(card_a, card_b)` (scrolls when they do not fit).
+- A `SceneItem` with `label="cpu · 68 °C"` gets that text drawn next to it in 3D.
+- Mark widgets with properties instead of styles: `set_prop(button, kind="primary")`
+  (blue), `kind="danger"`, `kind="flat"`; `set_prop(label, role="section")` (small
+  uppercase title such as "PLACEMENT"), `role="muted"`, `role="title"`,
+  `role="pill"` with `tone="warning" | "error" | "success" | "info"`;
+  `QToolButton` with `kind="segment"` for segmented choices.
+- When a colour is needed in code (a chart, a 3D item, a painted widget), take it from
+  `theme.COLORS` (`COLORS["accent"]`, `COLORS["error"]`, ...).
+- A new kind of control the sheet does not cover goes into `theme.style_sheet()`, not
+  into the tab.
+
+The panels sit beside the 3D view rather than floating over it as in the mockup:
+widgets drawn over a VTK OpenGL view are unreliable (they flicker or turn black on
+some Windows drivers). The ground, the cards and the gradient behind the 3D scene
+give the same look.
 
 ## Libraries to use
 
@@ -150,6 +207,15 @@ Use these rather than writing widgets from scratch; they are already dependencie
 | Collapsible sections, sliders with labels and ranges, searchable combo boxes, icon fonts, throttled/debounced signals | superqt (`QCollapsible`, `QLabeledDoubleSlider`, `QLabeledDoubleRangeSlider`, `QSearchableComboBox`, `superqt.utils.qthrottled` / `qdebounced`, `superqt.fonticon`) |
 | 2D charts: convergence (log scale), temperature bars with limits, line plots, live updates | pyqtgraph (`pyqtgraph.PlotWidget`) |
 | Report images | matplotlib (already used by `results.py`) |
+
+Caution with pyqtgraph: a `PlotWidget` nested in a tab panel can segfault when the window
+is destroyed (in `QGraphicsScene`'s destructor, depending on garbage collection timing).
+Two things fix it, both in place: the test teardown (`tests/conftest.py`) deletes only
+parentless top-level widgets (deleting pyqtgraph's own menus first crashed), and a tab
+with a chart empties its scene in `closing()` (`tabs/simulation/chart.py`,
+`ConvergenceChart.dispose`). Parent the tab's `QTimer`s to one of its widgets so they die
+with the window. The Air tab draws its small fan chart with `QPainter` instead
+(`tabs/air/fan_chart.py`). Either way, run your tab's tests several times in one process.
 
 ## Tests
 

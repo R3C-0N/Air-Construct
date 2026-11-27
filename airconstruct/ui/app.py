@@ -22,8 +22,8 @@ from PySide6.QtCore import QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSplitter,
     QStackedWidget,
-    QTabBar,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -45,9 +44,13 @@ from .run import RunController
 from .selection import Selection
 from .statusbar import StatusBar
 from .tabs import TAB_CLASSES, StepTab
+from .theme import COLORS, apply_theme, ensure_theme, set_prop
 from .units import Units
 from .view import geometry_items
 from .viewport import Viewport
+from .widgets.card import Card, CardColumn
+from .widgets.step_nav import StepNav
+from .widgets.toggle import ToggleSwitch
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "electronics_box.yaml"
 MAX_RECENT = 8
@@ -106,10 +109,8 @@ def _default_write_report(case: Case, case_dir: Path, out_dir: Path, summary=Non
     return write_report(case, case_dir, out_dir, summary=summary)
 
 
-BADGE_STYLE = {
-    "error": "background:#E0445A; color:white; border-radius:8px; font-size:11px; font-weight:600;",
-    "warning": "background:#F59E0B; color:white; border-radius:8px; font-size:11px; font-weight:600;",
-}
+#: steps whose content the model lock (a run going on) freezes; shown in their tooltip
+LOCKED_WHILE_RUNNING = ("model", "air", "volume")
 
 
 class MainWindow(QMainWindow):
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
         settings: QSettings | None = None,
     ) -> None:
         super().__init__()
+        ensure_theme()
         self.settings = settings or QSettings("AirConstruct", "AirConstruct")
         self.work_dir = Path(
             work_dir or self.settings.value("work_dir", str(Path.home() / "AirConstruct" / "runs"))
@@ -150,9 +152,13 @@ class MainWindow(QMainWindow):
                               write_report=write_report_fn or _default_write_report,
                               open_report=open_report),
             goto_tab=self.goto_tab, show_message=self.show_message,
+            open_project=self.load_case,
             work_dir=lambda: self.work_dir,
         )
         self.confirm_discard: Callable[[], bool] = self._ask_save_changes
+        from .tabs.model.new_project import ask_new_project
+
+        self.ask_new_project = ask_new_project
 
         self.tabs: dict[str, StepTab] = {}
         self.tab_order: list[str] = []
@@ -169,6 +175,8 @@ class MainWindow(QMainWindow):
             self.add_tab(cls(self.ctx))
 
         self.project.changed.connect(self._on_project_changed)
+        self.project.edit_refused.connect(self.show_message)
+        self.project.lock_changed.connect(lambda _l: self._update_badges())
         self.project.replaced.connect(self._on_project_replaced)
         self.project.dirty_changed.connect(lambda _d: self._update_title())
         self.project.path_changed.connect(self._update_title)
@@ -200,7 +208,7 @@ class MainWindow(QMainWindow):
         self.global_actions: list[QAction] = []
         self.file_menu = QMenu("Fichier", self)
         m = self.file_menu
-        self._action("&Nouveau", self.new_case, [QKeySequence.StandardKey.New], m)
+        self._action("&Nouveau…", self.new_project, [QKeySequence.StandardKey.New], m)
         self._action("&Ouvrir…", self.open_case, [QKeySequence.StandardKey.Open], m)
         self.recent_menu = m.addMenu("Récents")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
@@ -212,21 +220,40 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._action("&Quitter", self.close, [QKeySequence.StandardKey.Quit], m)
 
-        self.undo_action = self.project.undo_stack.createUndoAction(self, "Annuler")
+        # undo/redo follow the stack, and are off while a run locks the model
+        stack = self.project.undo_stack
+        self.undo_action = QAction("Annuler", self)
         self.undo_action.setShortcuts([QKeySequence(QKeySequence.StandardKey.Undo)])
-        self.redo_action = self.project.undo_stack.createRedoAction(self, "Rétablir")
+        self.undo_action.triggered.connect(
+            lambda: None if self.project.locked else stack.undo())
+        self.redo_action = QAction("Rétablir", self)
         self.redo_action.setShortcuts([QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")])
+        self.redo_action.triggered.connect(
+            lambda: None if self.project.locked else stack.redo())
         for a in (self.undo_action, self.redo_action):
             self.addAction(a)
             self.global_actions.append(a)
+        for sig in (stack.canUndoChanged, stack.canRedoChanged, stack.undoTextChanged,
+                    stack.redoTextChanged, self.project.lock_changed):
+            sig.connect(self._sync_undo_actions)
+        self._sync_undo_actions()
         self.run_action = self._action("Lancer le calcul", self.start_run, ["Ctrl+R"])
         self._action("Tout désélectionner", self.selection.clear, ["Esc"])
+
+    def _sync_undo_actions(self, *_args) -> None:
+        stack, locked = self.project.undo_stack, self.project.locked
+        for action, can, word, text in (
+                (self.undo_action, stack.canUndo(), "Annuler", stack.undoText()),
+                (self.redo_action, stack.canRedo(), "Rétablir", stack.redoText())):
+            action.setEnabled(can and not locked)
+            action.setText(f"{word} {text}".strip() if not locked
+                           else f"{word} (verrouillé pendant le calcul)")
 
     def _action_button(self, action: QAction, glyph: str) -> QToolButton:
         """A fixed-glyph button that follows an action (its tooltip names the step)."""
         b = QToolButton()
         b.setText(glyph)
-        b.setStyleSheet("font-size: 15px;")
+        b.setStyleSheet("font-size: 17px; min-width: 32px; min-height: 36px;")
 
         def sync() -> None:
             try:
@@ -240,61 +267,91 @@ class MainWindow(QMainWindow):
         sync()
         return b
 
+    @staticmethod
+    def _bar_card() -> tuple[QFrame, QHBoxLayout]:
+        card = QFrame()
+        card.setObjectName("card")
+        lay = QHBoxLayout(card)
+        lay.setContentsMargins(4, 4, 8, 4)
+        lay.setSpacing(4)
+        return card, lay
+
     def _build_ui(self) -> None:
-        top = QWidget()
-        top.setObjectName("topBar")
-        tl = QHBoxLayout(top)
-        tl.setContentsMargins(6, 4, 6, 4)
+        # top bar: three floating cards (file | steps | undo, expert), as in the mockup
+        file_card, fl = self._bar_card()
         self.file_button = QToolButton()
         self.file_button.setText("Fichier ▾")
+        self.file_button.setStyleSheet("font-size: 14px; min-height: 36px; padding: 0 12px;")
         self.file_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.file_button.setMenu(self.file_menu)
-        tl.addWidget(self.file_button)
+        fl.addWidget(self.file_button)
+        sep = QFrame()
+        sep.setFixedSize(1, 24)
+        sep.setStyleSheet(f"background: {COLORS['input_border']};")
+        fl.addWidget(sep)
         self.name_label = QLabel()
-        self.name_label.setStyleSheet("font-weight: 600;")
-        tl.addWidget(self.name_label)
+        set_prop(self.name_label, role="title")
+        self.name_label.setContentsMargins(8, 0, 4, 0)
+        fl.addWidget(self.name_label)
         self.state_label = QLabel()
-        self.state_label.setStyleSheet("color: #6B7280;")
-        tl.addWidget(self.state_label)
-        tl.addSpacing(24)
-        self.tab_bar = QTabBar()
-        self.tab_bar.setExpanding(False)
-        self.tab_bar.setDrawBase(False)
+        set_prop(self.state_label, role="pill")
+        fl.addWidget(self.state_label)
+
+        self.tab_bar = StepNav()
         self.tab_bar.currentChanged.connect(self._on_tab_bar_changed)
-        tl.addWidget(self.tab_bar)
-        tl.addStretch(1)
+
+        tools_card, tl = self._bar_card()
         self.undo_button = self._action_button(self.undo_action, "↶")
         self.redo_button = self._action_button(self.redo_action, "↷")
         tl.addWidget(self.undo_button)
         tl.addWidget(self.redo_button)
-        self.expert_check = QCheckBox("Mode expert")
+        self.expert_check = ToggleSwitch("Mode expert")
         self.expert_check.setChecked(self.expert.on)
         self.expert_check.toggled.connect(self.expert.set)
         self.expert.changed.connect(self.expert_check.setChecked)
+        tl.addSpacing(8)
         tl.addWidget(self.expert_check)
 
+        top = QHBoxLayout()
+        top.setSpacing(12)
+        top.addWidget(file_card)
+        top.addStretch(1)
+        top.addWidget(self.tab_bar)
+        top.addStretch(1)
+        top.addWidget(tools_card)
+
+        # body: tab panels (cards) on each side of the shared viewport
         self.left_stack = QStackedWidget()
-        self.left_stack.setMinimumWidth(240)
+        self.left_stack.setMinimumWidth(260)
         self.right_stack = QStackedWidget()
-        self.right_stack.setMinimumWidth(280)
+        self.right_stack.setMinimumWidth(300)
         self.body = QSplitter(Qt.Orientation.Horizontal)
+        self.body.setHandleWidth(12)
+        self.body.setChildrenCollapsible(False)
         self.body.addWidget(self.left_stack)
         self.body.addWidget(self.viewport)
         self.body.addWidget(self.right_stack)
         self.body.setStretchFactor(1, 1)
-        self.body.setSizes([300, 760, 380])
+        self.body.setSizes([280, 800, 340])
+
+        # bottom: camera presets on the left, status card on the right
+        self.status = StatusBar(self.alerts, self.units, self._on_alert_clicked,
+                                self.all_shortcut_actions)
+        bottom = QHBoxLayout()
+        bottom.setSpacing(12)
+        bottom.addWidget(self.viewport.camera_card)
+        bottom.addStretch(1)
+        bottom.addWidget(self.status)
 
         central = QWidget()
+        central.setObjectName("shell")
         cl = QVBoxLayout(central)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(0)
-        cl.addWidget(top)
+        cl.setContentsMargins(16, 16, 16, 16)
+        cl.setSpacing(12)
+        cl.addLayout(top)
         cl.addWidget(self.body, 1)
+        cl.addLayout(bottom)
         self.setCentralWidget(central)
-
-        self.status = StatusBar(self.alerts, self.units, self._on_alert_clicked,
-                                self.all_shortcut_actions, self)
-        self.setStatusBar(self.status)
 
     # ------------------------------------------------------------------ tabs
     def add_tab(self, tab: StepTab) -> None:
@@ -303,15 +360,14 @@ class MainWindow(QMainWindow):
         tab._panels = {}
         for side, stack, w in (("left", self.left_stack, tab.left_panel()),
                                ("right", self.right_stack, tab.right_panel())):
+            if w is not None and not isinstance(w, (Card, CardColumn)) and not w.property("cards"):
+                card = Card()  # every side panel sits on a card
+                card.body.addWidget(w)
+                w = card
             if w is not None:
                 stack.addWidget(w)
             tab._panels[side] = w
-        badge = QLabel()  # always there (keeps the tab width), empty when no alert
-        badge.setFixedSize(20, 16)
-        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tab._badge = badge
-        i = self.tab_bar.addTab(tab.title)
-        self.tab_bar.setTabButton(i, QTabBar.ButtonPosition.RightSide, badge)
+        self.tab_bar.addTab(tab.title)
         for a in tab.actions():
             a.setEnabled(False)
             self.addAction(a)
@@ -352,18 +408,17 @@ class MainWindow(QMainWindow):
         self.refresh_scene()
 
     def _update_badges(self) -> None:
-        for key, tab in self.tabs.items():
+        for i, key in enumerate(self.tab_order):
             alerts = self.alerts.for_tab(key)
-            badge: QLabel = tab._badge
-            if not alerts:
-                badge.setText("")
-                badge.setStyleSheet("")
-                badge.setToolTip("")
-                continue
             level = "error" if any(a.level == "error" for a in alerts) else "warning"
-            badge.setText(str(len(alerts)))
-            badge.setStyleSheet(BADGE_STYLE[level])
-            badge.setToolTip("\n".join(a.message for a in alerts))
+            lines = [a.message for a in alerts]
+            if self.project.locked and key in LOCKED_WHILE_RUNNING:
+                lines.insert(0, "Verrouillé pendant le calcul")
+            self.tab_bar.buttons[i].set_badge(len(alerts), level, "\n".join(lines))
+
+    def tab_badge(self, key: str) -> str:
+        """Text of a step's alert badge ('' when none)."""
+        return self.tab_bar.buttons[self.tab_order.index(key)].badge.text()
 
     def all_shortcut_actions(self) -> list[QAction]:
         out = list(self.global_actions)
@@ -414,6 +469,8 @@ class MainWindow(QMainWindow):
         else:
             state = "enregistré"
         self.state_label.setText(state)
+        set_prop(self.state_label, tone="warning" if p.dirty else
+                 "success" if p.path is not None else "")
         self.setWindowTitle(f"Air-Construct · {name}{' •' if p.dirty else ''}")
 
     # ------------------------------------------------------------------ run
@@ -441,11 +498,28 @@ class MainWindow(QMainWindow):
             return self.save_case()
         return ans == QMessageBox.StandardButton.Discard
 
-    def new_case(self, case: Case | None = None) -> bool:
+    def new_case(self, case: Case | dict | None = None) -> bool:
+        """Start a new project from ``case`` (a Case or project data, possibly not
+        valid yet), default: the example."""
         if self.runner.running or not self.confirm_discard():
             return False
-        self.project.reset_case(case or default_case())
+        case = case or default_case()
+        self.project.reset(case.model_dump(mode="json") if isinstance(case, Case) else case)
+        self.goto_tab(self.tab_order[0])
         return True
+
+    def new_project(self) -> bool:
+        """Fichier > Nouveau: the "Nouveau projet" dialog (templates, open, recent).
+        ``ask_new_project`` is replaceable, for tests."""
+        if self.runner.running:
+            return False
+        choice = self.ask_new_project(self, default_case().model_dump(mode="json"),
+                                      self.recent_files())
+        if choice is None:
+            return False
+        if isinstance(choice, (str, Path)):
+            return self.load_case(Path(choice))
+        return self.new_case(choice)
 
     def load_case(self, path: Path) -> bool:
         if self.runner.running or not self.confirm_discard():
@@ -531,6 +605,8 @@ class MainWindow(QMainWindow):
         elif not self.confirm_discard():
             event.ignore()
             return
+        for tab in self.tabs.values():
+            tab.closing()
         self.viewport.close_plotter()
         super().closeEvent(event)
 
@@ -539,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     app = QApplication.instance() or QApplication(argv)
     app.setApplicationName("Air-Construct")
+    apply_theme(app)
     case_path = Path(argv[1]) if len(argv) > 1 else None
     win = MainWindow()
     if case_path is not None:

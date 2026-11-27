@@ -66,3 +66,5 @@ class AppContext:
     goto_tab: Callable[[str], None] = field(default=lambda key: None)
     show_message: Callable[[str], None] = field(default=lambda text: None)
     work_dir: Callable[[], Path] = field(default=lambda: Path.home() / "AirConstruct" / "runs")
+    #: open another project file (asks to save the current one); True when opened
+    open_project: Callable[[Path], bool] = field(default=lambda path: False)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "airconstruct"
-version = "0.1.0"
+version = "1.0.0"
 description = "Open source desktop tool for air flow and heat transfer simulation (OpenFOAM based)"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
@@ -28,6 +28,9 @@ airconstruct-gui = "airconstruct.ui.app:main"
 
 [tool.setuptools.packages.find]
 include = ["airconstruct*"]
+
+[tool.setuptools.package-data]
+"airconstruct.ui" = ["fonts/*.ttf", "fonts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

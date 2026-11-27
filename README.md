@@ -51,7 +51,8 @@ Optional: `AIRCONSTRUCT_WSL_DISTRO` picks a distro other than the default one,
 
 ## Download (Windows / Linux)
 
-Every push to `main` builds the desktop app in GitHub Actions
+Every push to `main` (finished work merged from `develop`, see
+[CONTRIBUTING.md](CONTRIBUTING.md)) builds the desktop app in GitHub Actions
 ([Build desktop app](../../actions/workflows/build.yml)): open the latest run and download
 the `Air-Construct-windows-x64` artifact (installer `...-setup.exe`, or a portable `.zip`)
 or `Air-Construct-linux-x64` (`.tar.gz`). Tagging a version `v*` attaches the same
@@ -89,6 +90,73 @@ Phases end cleanly through SIGUSR1 (`-opt-switch stopAtWriteNowSignal=10`).
 
 Precision levels 1 to 5 set the mesh; `airconstruct check` prints the cell count and a
 run time estimate (`estimate.py`).
+
+## Fans, grilles and vents
+
+Each opening says what drives the air through it:
+
+| opening | OpenFOAM boundary (air region) |
+|---|---|
+| inlet with `flow_rate` / `velocity`, or `fan: {flow_rate: ...}` | fixed velocity |
+| inlet with `fan: {curve: [[Q, dp], ...]}` (m3/s, Pa) | `fanPressure`, direction in |
+| inlet with nothing: free vent | `prghTotalPressure` at ambient |
+| outlet | `prghPressure` at ambient |
+| outlet with `fan: {flow_rate: ...}` or `fan: {curve: ...}` | fixed velocity outwards / `fanPressure` out |
+
+With a curve, the operating point is a result: `results.summarize(...).fans` gives the
+flow rate and pressure rise of every fan, `airconstruct check` prints a 1D estimate
+(`fans.estimate_flow`). `grille: {open_area: 0.5}` (or `loss_coefficient: K`) on any
+opening adds a porous layer two cells deep just inside it (cellZone `grille_<name>`,
+Darcy-Forchheimer) that drops K rho u^2 / 2; K comes from the open-area ratio (Idelchik,
+thin perforated plate). See `examples/fan_box.yaml`.
+
+## Enclosure walls
+
+Walls are adiabatic by default. `walls: {mode: exchange, material: steel, thickness: 0.001,
+h_external: 5, emissivity: 0.9}` makes heat cross them (1D conduction through the wall,
+then convection and radiation to `t_external`, default ambient), with OpenFOAM's
+`externalWallHeatFluxTemperature` on both the air and the solid side. `faces: {zmin:
+{mode: adiabatic}}` overrides single faces (the walls are then split into
+`walls_<face>` patches). `Summary.heat_through_walls_w` gives the heat they carry away,
+and the energy balance includes it.
+
+## Probes
+
+`probes: [{name: cpu_top, point: {x: 0.075, y: 0.055, z: 0.012}}]` records the
+temperature (and the air velocity, for a point in the air) every
+`solver.probe_interval` iterations, through OpenFOAM `probes` function objects (one
+per region). `probes.read_probes(case, case_dir)` returns the whole history, during the
+run or after; `Summary.probes` holds the last values.
+
+## Local mesh refinement
+
+`refinements: [{target: cpu, factor: 3, margin: 0.01}]` uses cells 3 times smaller
+(or `cell_size`) over the component, growing back to the bulk size over `margin`
+(default 3 bulk cells) with graded blockMesh segments. The grid stays structured, so
+the refinement is a slab through the whole enclosure along each axis.
+
+## Run control and live results
+
+- **Live monitors**: OpenFOAM function objects (`foam/monitors.py`) print, every
+  iteration, the mean temperature of each region, the heat each part gives to the air
+  and the flow, temperature and pressure of each opening. `monitor.RunMonitor` turns
+  them, with the residuals of every field in every region and the solver's min/max
+  temperatures, into one `Progress` snapshot per iteration (`run_case(on_progress=...)`,
+  also appended to `<case>/monitor.jsonl` for charts after the fact).
+- **Energy balance and pressure drop**: `results.summarize` gives where each part's
+  heat goes (air, other parts, walls, openings; `Summary.energy.to_sankey()`) and the
+  static and total pressure drop with the flow through each opening.
+- **Stop and resume**: a stopped run (or one out of iterations) continues from its last
+  iteration: `airconstruct resume runs/<case> [--iterations N]` or
+  `runner.resume_case`. Its state is in `<case>/run.json`.
+- **Queue and history**: `runs.RunStore` keeps every run in its own directory with a
+  row in `runs/history.sqlite`; `runs.RunQueue` runs queued cases one after the other in
+  the background; `runs.compare` lists what changed between two runs (case and
+  results). CLI: `airconstruct queue add a.yaml b.yaml`, `airconstruct queue run`,
+  `airconstruct history`, `airconstruct compare ID1 ID2`.
+- **Diagnosis**: when a run fails or does not converge, `RunResult.diagnosis`
+  (`diagnose.py`) names the usual cause (divergence, temperature runaway, heated part
+  with no path to the air, mesh failure, disk full...) and the part involved.
 
 ## Conventions
 

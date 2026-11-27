@@ -4,6 +4,7 @@ name: Build desktop app
 # and uploads it as a workflow artifact:
 #   - Windows: Air-Construct-<version>-windows-x64-setup.exe (Inno Setup) + portable .zip
 #   - Linux:   Air-Construct-<version>-linux-x64.tar.gz
+# Runs only for `main` (push, or a pull request into it), tags and manual runs.
 # Pushing a tag v* also attaches these files to a GitHub release for that tag.
 
 on:
@@ -11,12 +12,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
-    paths:
-      - "airconstruct/**"
-      - "packaging/**"
-      - "examples/**"
-      - "pyproject.toml"
-      - ".github/workflows/build.yml"
+    branches: [main]
   workflow_dispatch:
 
 permissions:

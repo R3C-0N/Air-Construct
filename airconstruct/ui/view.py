@@ -21,7 +21,7 @@ from ..case import Case, Face, OpeningKind
 KELVIN = 273.15
 OPENING_THICKNESS = 0.002  # fraction of the enclosure diagonal, only for display
 
-FIELDS = {"T": "Temperature (°C)", "U": "Velocity (m/s)"}
+FIELDS = {"T": "Température (°C)", "U": "Vitesse (m/s)"}
 
 
 @dataclass
@@ -34,6 +34,8 @@ class SceneItem:
     scalars: str | None = None
     kwargs: dict = field(default_factory=dict)
     key: str | None = None  # selection key (selection.py) of the object it shows
+    label: str | None = None  # text drawn next to the item (e.g. "cpu · 68 °C")
+    highlight_opacity: float = 0.8  # opacity at least this when selected (surfaces)
 
 
 def opening_bounds(case: Case, opening) -> tuple[float, float, float, float, float, float]:
@@ -155,6 +157,7 @@ def three_d_enabled() -> bool:
     return os.environ.get("AIRCONSTRUCT_NO_3D", "") not in ("1", "true", "yes")
 
 
+BACKGROUND, BACKGROUND_TOP = "#E7EAEF", "#FFFFFF"  # theme.COLORS background gradient
 CAMERAS = {"top": "Dessus", "front": "Face", "side": "Côté", "iso": "Iso"}
 
 
@@ -177,7 +180,7 @@ class SceneView(QWidget):
                 from pyvistaqt import QtInteractor
 
                 self.plotter = QtInteractor(self)
-                self.plotter.set_background("white")
+                self.plotter.set_background(BACKGROUND, top=BACKGROUND_TOP)
                 layout.addWidget(self.plotter.interactor)
                 self._enable_picking()
             except Exception as exc:  # noqa: BLE001 - no OpenGL, missing package...
@@ -209,6 +212,16 @@ class SceneView(QWidget):
             else:
                 kw["color"] = it.color
             p.add_mesh(it.mesh, style=it.style, opacity=it.opacity, name=it.name, **kw)
+        labelled = [it for it in items if it.label]
+        if labelled:
+            import numpy as np
+
+            b = [it.mesh.bounds for it in labelled]
+            pts = np.array([((x0 + x1) / 2, (y0 + y1) / 2, z1) for x0, x1, y0, y1, _z0, z1 in b])
+            p.add_point_labels(pts, [it.label for it in labelled], name="labels",
+                               font_size=12, show_points=False, shape_opacity=0.9,
+                               shape_color="white", text_color="#111827",
+                               always_visible=True, pickable=False, reset_camera=False)
         p.add_axes()
         if first or reset_camera:
             p.view_isometric()
@@ -243,6 +256,17 @@ class SceneView(QWidget):
         {"top": p.view_xy, "front": p.view_xz, "side": p.view_yz,
          "iso": p.view_isometric}[view]()
         p.reset_camera()
+        p.render()
+
+    def frame_bounds(self, bounds) -> None:
+        """Point the camera at ``bounds`` (xmin, xmax, ymin, ymax, zmin, zmax)."""
+        p = self.plotter
+        if p is None:
+            return
+        x0, x1, y0, y1, z0, z1 = bounds
+        pad = 0.6 * max(x1 - x0, y1 - y0, z1 - z0, 1e-9)
+        p.reset_camera(bounds=(x0 - pad, x1 + pad, y0 - pad, y1 + pad, z0 - pad, z1 + pad))
+        p.set_focus(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2))
         p.render()
 
     def show_case(self, case: Case, reset_camera: bool = False) -> None:
