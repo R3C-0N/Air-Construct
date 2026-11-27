@@ -81,3 +81,11 @@ def test_missing_probe_does_not_shift_others(case, tmp_path):
     assert p["above_cpu"].t_c == []
     assert p["outlet_air"].t_c == pytest.approx([26.0])
     assert p["in_cpu"].t_c == []
+
+
+def test_headerless_file_keeps_probe_order(case, tmp_path):
+    _write(tmp_path / "postProcessing" / "probes_air" / "0" / "T", "",
+           ["10 300.15 299.15\n"])
+    p = read_probes(case, tmp_path)
+    assert p["above_cpu"].t_c == pytest.approx([27.0])
+    assert p["outlet_air"].t_c == pytest.approx([26.0])

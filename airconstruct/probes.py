@@ -106,6 +106,8 @@ def read_probes(case: Case, case_dir: str | Path) -> dict[str, ProbeSeries]:
                 if fname == "T" and points:
                     cols = [_column(points, p.point.as_tuple()) for p in mine]
                 rows.update(data)
+        if not cols and t_rows:  # no readable header: OpenFOAM keeps the given order
+            cols = list(range(len(mine)))
         if not cols:
             continue
         for p, col in zip(mine, cols, strict=True):
