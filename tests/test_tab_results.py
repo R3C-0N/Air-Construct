@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -60,20 +61,14 @@ def test_french_numbers():
 
 
 def test_limits_and_rows(case):
-    from airconstruct.ui.tabs.results.data import (
-        over_limit,
-        part_limit,
-        part_rows,
-        rows_csv,
-        set_part_limit,
-    )
+    from airconstruct.ui.tabs.results.data import over_limit, part_limit, part_rows, rows_csv
 
     data = case.model_dump(mode="json")
-    set_part_limit(data, "cpu", 50.0)
-    set_part_limit(data, "ram", 85.0)
+    comps = {c["name"]: c for c in data["components"]}
+    comps["cpu"]["max_temperature"] = 50.0  # set in the Modèle step
+    comps["ram"]["max_temperature"] = 85.0
     assert part_limit(data, "cpu") == 50.0
-    data["components"][2]["max_temperature"] = 60.0  # core field wins when it exists
-    assert part_limit(data, data["components"][2]["name"]) == 60.0
+    assert part_limit(data, "board") is None
     rows = part_rows(fake_summary(case, None), data)
     assert rows[0].name == "cpu" and rows[0].status == "ko"  # 55 > 50
     assert [r.name for r in over_limit(rows)] == ["cpu"]
@@ -82,8 +77,6 @@ def test_limits_and_rows(case):
     csv = rows_csv(rows)
     assert csv.splitlines()[0].startswith("Pièce;Puissance (W)")
     assert "cpu;15,00;" in csv and csv.splitlines()[1].endswith(";KO")
-    set_part_limit(data, "cpu", None)
-    assert part_limit(data, "cpu") is None
 
 
 def test_describe_changes(case):
@@ -236,16 +229,17 @@ def test_results_limits_alerts_and_stale_banner(qapp, tmp_path, settings, case):
     assert res.kpis.values["Vitesse max"].text() == "1,50 m/s"
     assert res.results.table.rowCount() == 4
     assert res.results.table.item(0, res.results.STATE_COL).text() == "—"
-    # a limit typed in the table: KO, alert on the tab
-    item = res.results.table.item(0, res.results.LIMIT_COL)
-    item.setText("50")
-    assert win.project.data["ui"]["limits"]["cpu"] == 50.0
+    # a limit set on the part (Modèle step): KO, alert on the tab
+    win.project.edit("Limite", lambda d: d["components"][1].update(max_temperature=50.0))
+    assert res.results.table.item(0, res.results.LIMIT_COL).text() == "50"
     assert res.results.table.item(0, res.results.STATE_COL).text() == "✗"
-    assert not win.project.stale  # limits are not physics
     assert [a.message for a in win.alerts.for_tab("results")] == [
         "cpu dépasse sa limite (55,0 / 50 °C)"]
     assert win.tab_badge("results") == "1"
     assert "cpu dépasse" in res.kpis.limits.text()
+    # double-click a part: opens it in the Modèle step
+    res.results.table.cellDoubleClicked.emit(0, 0)
+    assert win.current_tab is win.tabs["model"] and win.selection.keys == ["component:cpu"]
     win.project.undo_stack.undo()
     assert win.alerts.for_tab("results") == []
     # model changed: banner says what changed
@@ -303,7 +297,7 @@ def test_compare_two_runs(qapp, tmp_path, settings, case):
     run_and_wait(qapp, win)
     assert [e.number for e in res.history] == [1, 2]
     res._fill_compare_menu(res.compare_menu)
-    acts = [a for a in res.compare_menu.actions() if a.isEnabled()]
+    acts = [a for a in res.compare_menu.actions() if a.isEnabled() and not a.isSeparator()]
     assert acts and "Calcul 1" in acts[0].text()
     acts[0].trigger()
     assert res.compare == (0, 1)
@@ -339,3 +333,48 @@ def test_exports(qapp, tmp_path, settings, case):
     assert pdf.suffix == ".pdf" and pdf.read_bytes().startswith(b"%PDF")
     assert res.last_report == pdf
     win.close()
+
+
+def test_compare_with_saved_runs(qapp, tmp_path, settings, case):
+    from airconstruct.runs import RunStore
+
+    win = _window(tmp_path, settings, case)
+    res = win.tabs["results"]
+    run_and_wait(qapp, win)
+    store = RunStore(tmp_path / "runs")
+    saved = store.list(name=case.name)
+    assert len(saved) == 1 and saved[0].status == "converged" and saved[0].label == "interface"
+    assert saved[0].summary["components"][0]["name"] == "board"
+    # a later session: the run is listed under "Calculs enregistrés"
+    win.close()
+    win = _window(tmp_path, settings, case)
+    res = win.tabs["results"]
+    win.project.edit("Puissance", lambda d: d["components"][1].update(power=6.5))
+    run_and_wait(qapp, win)
+    res._fill_compare_menu(res.compare_menu)
+    texts = [a.text() for a in res.compare_menu.actions()]
+    assert "Calculs enregistrés" in texts
+    act = next(a for a in res.compare_menu.actions() if a.text().startswith("Calcul du "))
+    act.trigger()
+    a, b = (res.history[i] for i in res.compare)
+    assert a.name.startswith("Calcul du ") and b is res.current
+    t = res.compare_view.table
+    assert [t.item(0, c).text() for c in range(4)] == ["cpu", "55,0 °C", "46,5 °C", "−8,5 °C"]
+    assert res.compare_view.params.item(0, 0).text() == "components.cpu.power"
+    win.close()
+
+
+def test_saved_run_fields_from_its_own_folder(tmp_path, case):
+    from airconstruct.runs import RunStore
+    from airconstruct.ui.tabs.results import history
+
+    store = RunStore(tmp_path)
+    rec = store.add(case, label="ventilateur 80 %")
+    Path(rec.case_dir).mkdir(parents=True)
+    store.update(rec.id, status="finished", summary=fake_summary(case, None).to_dict())
+    rec = store.get(rec.id)
+    record = history.as_record(rec, lambda d: fake_regions(case))
+    assert set(record.outcome.regions) == {"air", "cpu"}
+    assert record.outcome.summary.hottest().name == "cpu"
+    assert history.saved_runs(store, case.name, set()) == [rec]
+    assert history.saved_runs(store, case.name, {rec.id}) == []

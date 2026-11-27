@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...theme import COLORS, set_prop
-from .data import NA, CompareRow, PartRow, finite, fr, parse_fr
+from .data import NA, CompareRow, PartRow, finite, fr
 
 NO_RESULTS = "Pas encore de résultats. Lancez le calcul dans l’étape Simulation."
 RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -54,12 +54,13 @@ def _fit_height(t: QTableWidget) -> None:
 
 
 class ResultsPanel(QWidget):
-    """Headline + per-part table (min, mean, max, limit, OK/KO). The limit column is
-    editable: ``limit_edited(name, value or None)``."""
+    """Headline + per-part table (min, mean, max, limit, OK/KO). The limit is the
+    part's maximum temperature set in the Modèle step; double-clicking a row emits
+    ``part_activated(name)``."""
 
     COLUMNS = ("Pièce", "min", "moy.", "max", "limite", "")
     MAX_COL, LIMIT_COL, STATE_COL = 3, 4, 5
-    limit_edited = Signal(str, object)
+    part_activated = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -70,13 +71,12 @@ class ResultsPanel(QWidget):
         set_prop(self.headline, role="muted")
         layout.addWidget(self.headline)
         self.table = _table(list(self.COLUMNS))
-        self.table.setToolTip("Double-cliquez sur la limite d’une pièce pour la changer.")
-        self.table.itemChanged.connect(self._item_changed)
+        self.table.setToolTip("Double-cliquez sur une pièce pour régler sa limite dans "
+                              "l’étape Modèle.")
+        self.table.cellDoubleClicked.connect(self._double_clicked)
         layout.addWidget(self.table)
         self.rows: list[PartRow] = []
-        self._filling = False
         self.temp_to_display: Callable[[float], float] = lambda c: c
-        self.temp_from_display: Callable[[float], float] = lambda v: v
 
     def clear(self, text: str = NO_RESULTS) -> None:
         self.headline.setText(text)
@@ -84,7 +84,6 @@ class ResultsPanel(QWidget):
 
     def set_rows(self, rows: list[PartRow]) -> None:
         self.rows = list(rows)
-        self._filling = True
         t = self.table
         t.setRowCount(len(rows))
         conv = self.temp_to_display
@@ -94,38 +93,26 @@ class ResultsPanel(QWidget):
                       fr(conv(row.limit), 0) if row.limit is not None else NA, status]
             for col, v in enumerate(values):
                 item = QTableWidgetItem(v)
-                flags = Qt.ItemFlag.ItemIsEnabled
-                if col == self.LIMIT_COL:
-                    flags |= Qt.ItemFlag.ItemIsEditable
-                item.setFlags(flags)
-                if col == 0:
-                    item.setToolTip(f"{row.name} · {fr(row.power_w)} W")
-                if col == self.STATE_COL and row.status:
-                    item.setToolTip("Sous la limite" if row.status == "ok" else
-                                    "Au-dessus de la limite")
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 if col:
                     item.setTextAlignment(RIGHT)
+                if col == 0:
+                    item.setToolTip(f"{row.name} · {fr(row.power_w)} W")
+                if col == self.LIMIT_COL:
+                    item.setToolTip("Température max admissible, réglée dans l’étape Modèle")
                 if col == self.STATE_COL and row.status:
                     item.setForeground(QColor(COLORS["success"] if row.status == "ok"
                                               else COLORS["error_text"]))
+                    item.setToolTip("Sous la limite" if row.status == "ok" else
+                                    "Au-dessus de la limite")
                 if col == self.MAX_COL and row.status == "ko":
                     item.setForeground(QColor(COLORS["error_text"]))
                 t.setItem(r, col, item)
-        t.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked
-                          | QTableWidget.EditTrigger.EditKeyPressed)
-        self._filling = False
         _fit_height(t)
 
-    def _item_changed(self, item: QTableWidgetItem) -> None:
-        if self._filling or item.column() != self.LIMIT_COL:
-            return
-        name = self.table.item(item.row(), 0).text()
-        try:
-            v = parse_fr(item.text())
-        except ValueError:
-            self.set_rows(self.rows)  # not a number: put the old value back
-            return
-        self.limit_edited.emit(name, None if v is None else self.temp_from_display(v))
+    def _double_clicked(self, row: int, _col: int) -> None:
+        if 0 <= row < len(self.rows):
+            self.part_activated.emit(self.rows[row].name)
 
 
 class StaleBanner(QFrame):

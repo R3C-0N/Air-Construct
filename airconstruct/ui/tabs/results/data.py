@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 UI_KEY = "ui"
-LIMITS_KEY = "limits"  # data["ui"]["limits"] = {part name: max temperature in °C}
 NA = "—"
 
 
@@ -47,24 +46,12 @@ def parse_fr(text: str) -> float | None:
 
 
 def part_limit(data: dict, name: str) -> float | None:
-    """Maximum allowed temperature of a part (°C), or None.
-
-    A ``max_temperature`` on the component (case model, when the core supports it)
-    wins over the one set in this tab (``data["ui"]["limits"]``)."""
+    """Maximum allowed temperature of a part (°C): the component's ``max_temperature``
+    (set in the Modèle step), or None."""
     for c in data.get("components") or []:
         if isinstance(c, dict) and c.get("name") == name and finite(c.get("max_temperature")):
             return float(c["max_temperature"])
-    v = ((data.get(UI_KEY) or {}).get(LIMITS_KEY) or {}).get(name)
-    return float(v) if finite(v) else None
-
-
-def set_part_limit(data: dict, name: str, value: float | None) -> None:
-    """Edit function for ``project.edit``: sets (or removes, value None) a limit."""
-    limits = data.setdefault(UI_KEY, {}).setdefault(LIMITS_KEY, {})
-    if value is None:
-        limits.pop(name, None)
-    else:
-        limits[name] = float(value)
+    return None
 
 
 @dataclass

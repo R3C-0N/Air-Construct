@@ -13,8 +13,7 @@ Owned by: thread "Résultats" (see docs/ui-architecture.md). The tab is split in
 - ``export.py``: PNG, PDF report, VTK
 
 Runs finished in this session are kept (``history``) so two of them can be compared.
-Limits per part are saved in the project under ``data["ui"]["limits"]`` (they do not
-make results stale), unless the case model gives a ``max_temperature``.
+The limit of a part is its ``max_temperature``, set in the Modèle step.
 """
 
 from __future__ import annotations
@@ -50,7 +49,7 @@ from ...selection import component_key
 from ...theme import set_prop
 from ...widgets.card import Card
 from ..base import StepTab
-from . import export
+from . import export, history
 from .charts import LineChart, PartChart, SankeyWidget, simple_sankey
 from .data import (
     PartRow,
@@ -62,7 +61,6 @@ from .data import (
     fr,
     over_limit,
     part_rows,
-    set_part_limit,
     write_csv,
 )
 from .filters_panel import FiltersPanel
@@ -102,6 +100,7 @@ class RunEntry:
     when: datetime
     data: FieldData | None = None
     extra: dict = field(default_factory=dict)
+    name: str | None = None  # title of a saved run ("Calcul du 26 nov. 09:40")
 
     @property
     def summary(self):
@@ -109,7 +108,7 @@ class RunEntry:
 
     @property
     def title(self) -> str:
-        t = f"Calcul {self.number}"
+        t = self.name or f"Calcul {self.number}"
         flows = [o.flow_rate for o in self.record.case.openings
                  if getattr(o, "flow_rate", None)]
         if flows:
@@ -155,6 +154,7 @@ class ResultsTab(StepTab):
         self.phase = 0.0
         self._estimate_max: float | None = None
         self.rows: list[PartRow] = []
+        self._store = None
 
         self._build_right()
         self._build_toolbar()
@@ -178,7 +178,7 @@ class ResultsTab(StepTab):
     # ------------------------------------------------------------------ build
     def _build_right(self) -> None:
         self.results = ResultsPanel()
-        self.results.limit_edited.connect(self.set_limit)
+        self.results.part_activated.connect(self.edit_part)
         self.banner = StaleBanner(self.rerun, self.dismiss_stale)
         self.banner.setVisible(False)
         self.empty = EmptyState(self.rerun, lambda: self.ctx.goto_tab("volume"))
@@ -391,7 +391,9 @@ class ResultsTab(StepTab):
         if rec is not None and rec.outcome.summary is not None and self.current is None:
             self._run_count += 1
             data = FieldData(rec.case, rec.outcome.regions) if rec.outcome.regions else None
-            self.history.append(RunEntry(self._run_count, rec, datetime.now(), data))
+            entry = RunEntry(self._run_count, rec, datetime.now(), data)
+            entry.extra["store_id"] = history.record_run(self.store(), rec)
+            self.history.append(entry)
             del self.history[:-HISTORY_SIZE]
             self.compare = None
             self._estimate_max = self._estimate_hottest(rec.case)
@@ -468,7 +470,6 @@ class ResultsTab(StepTab):
     def _set_rows(self, rows: list[PartRow]) -> None:
         u = self.ctx.units
         self.results.temp_to_display = u.temperature_to_display
-        self.results.temp_from_display = u.temperature_from_display
         self.parts_title.setText(f"PAR PIÈCE · {u.temperature_symbol.upper()}")
         self.results.set_rows(rows)
         self.part_chart.set_rows(rows)
@@ -564,10 +565,10 @@ class ResultsTab(StepTab):
         self.banner.setVisible(False)
 
     # ------------------------------------------------------------------ limits
-    def set_limit(self, name: str, value: float | None) -> None:
-        label = f"Limite de {name}" if value is not None else f"Retirer la limite de {name}"
-        self.ctx.project.edit(label, lambda d: set_part_limit(d, name, value))
-        self._refresh()
+    def edit_part(self, name: str) -> None:
+        """Open the part in the Modèle step (where its limit is set)."""
+        self.ctx.selection.set([component_key(name)])
+        self.ctx.goto_tab("model")
 
     def alerts(self, project):
         rec = project.results
@@ -723,17 +724,38 @@ class ResultsTab(StepTab):
         self._timer.stop()
 
     # ------------------------------------------------------------------ compare
+    def store(self):
+        """The run history (``history.sqlite`` in the runs folder), opened on first use."""
+        root = Path(self.ctx.work_dir())
+        if self._store is None or Path(self._store.root) != root:
+            self._store = history.open_store(root)
+        return self._store
+
     def _fill_compare_menu(self, menu: QMenu) -> None:
         menu.clear()
         cur = self.current
         others = [e for e in self.history if e is not cur]
-        if cur is None or not others:
+        saved = []
+        if cur is not None:
+            skip = {e.extra.get("store_id") for e in self.history} - {None}
+            saved = history.saved_runs(self.store(), cur.record.case.name, skip)
+        if cur is None or not (others or saved):
             a = menu.addAction("Lancez au moins deux calculs pour les comparer")
             a.setEnabled(False)
             return
+        if others:
+            menu.addSection("Calculs de la session")
         for e in reversed(others):
             menu.addAction(f"{e.title} ({e.subtitle})  ↔  {cur.title}",
                            lambda e=e: self.start_compare(e, cur))
+        if saved:
+            menu.addSection("Calculs enregistrés")
+        for r in saved:
+            when = export.fr_date(history.run_date(r))
+            label = f"Calcul du {when}" + (f" · {r.label}" if r.label and
+                                           r.label != history.STORE_LABEL else "")
+            menu.addAction(f"{label}  ↔  {cur.title}",
+                           lambda r=r: self.compare_saved(r))
         if self.compare is not None:
             menu.addSeparator()
             menu.addAction("Quitter la comparaison", self.stop_compare)
@@ -745,6 +767,23 @@ class ResultsTab(StepTab):
             m.addAction("Inverser A et B", self.swap_compare)
         m.exec(self.compare_view.swap_button.mapToGlobal(
             self.compare_view.swap_button.rect().bottomLeft()))
+
+    def compare_saved(self, rec) -> None:
+        """Compare the current run with a run of the history (runs.RunRecord)."""
+        cur = self.current
+        if cur is None:
+            return
+        try:
+            from ....results import load_regions
+        except ImportError:
+            load_regions = None
+        record = history.as_record(rec, load_regions)
+        regions = record.outcome.regions
+        when = history.run_date(rec)
+        entry = RunEntry(0, record, when, FieldData(record.case, regions) if regions else None,
+                         {"store_id": rec.id}, name=f"Calcul du {export.fr_date(when)}")
+        self.history.insert(0, entry)
+        self.start_compare(entry, cur)
 
     def start_compare(self, a: RunEntry, b: RunEntry) -> None:
         self.compare = (self.history.index(a), self.history.index(b))
