@@ -18,6 +18,7 @@ from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMenu,
     QPushButton,
@@ -60,11 +61,15 @@ class AirTree(ObjectTree):
 
     def rebuild(self) -> None:
         data = self.ctx.project.get() or {}
+        h = self.header()
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self._syncing = True
         try:
             self.clear()
             self._items = {}
             group = self._add(self, "Ouvertures", None)
+            group.setFirstColumnSpanned(True)
             for o in data.get("openings") or []:
                 name = str(o.get("name"))
                 item = self._add(group, name, opening_key(name), opening_detail(o),
@@ -73,6 +78,7 @@ class AirTree(ObjectTree):
                 item.setToolTip(0, f"{kind} · {FACE_LABELS.get(o.get('face'), '')}")
             group.setExpanded(True)
             group = self._add(self, "Parois", None)
+            group.setFirstColumnSpanned(True)
             item = self._add(group, "Boîtier", WALLS_KEY, walls_summary(data), "#9aa5b1")
             item.setToolTip(1, walls_summary(data))
             group.setExpanded(True)

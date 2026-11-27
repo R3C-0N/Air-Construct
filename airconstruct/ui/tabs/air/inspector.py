@@ -79,7 +79,8 @@ class LengthSpins:
 
 
 class OpeningInspector(QWidget):
-    PAGES: ClassVar[dict[str, str]] = {"opening": "Ouverture", "fan": "Ventilateur", "grille": "Grille"}
+    PAGES: ClassVar[dict[str, str]] = {"opening": "Général", "fan": "Ventilateur",
+                                       "grille": "Grille"}
 
     def __init__(self, tab, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -96,7 +97,7 @@ class OpeningInspector(QWidget):
         self.name_edit.setToolTip("Nom de l’ouverture (lettres, chiffres et _)")
         self.name_edit.editingFinished.connect(self._rename)
         head.addRow("Nom", self.name_edit)
-        self.kind = Segmented({"inlet": "Entrée d’air", "outlet": "Sortie d’air"})
+        self.kind = Segmented({"inlet": "Entrée", "outlet": "Sortie"})
         self.kind.changed.connect(self._kind)
         head.addRow("Type", self.kind)
         self.delete = QPushButton("Supprimer")
@@ -136,9 +137,9 @@ class OpeningInspector(QWidget):
         self.velocity = spin(0.001, 100, 2, "m/s", 0.1)
         self.velocity.valueChanged.connect(lambda v: self._set_field("velocity", v, "Vitesse"))
         f.addRow("Vitesse", self.velocity)
-        self.t_ambient = QCheckBox("Air à la température ambiante")
+        self.t_ambient = QCheckBox("Ambiante")
         self.t_ambient.toggled.connect(self._t_toggled)
-        f.addRow("Température", self.t_ambient)
+        f.addRow("T entrée", self.t_ambient)
         self.temperature = spin(-60, 300, 1, "°C", 1.0)
         self.temperature.valueChanged.connect(
             lambda v: self._set_field("temperature", self.ctx.units.temperature_from_display(v),
@@ -501,8 +502,6 @@ class OpeningInspector(QWidget):
                 set_value(self.k, float(g["loss_coefficient"]))
             self.open_area.setEnabled(not k_given)
             self.grille_info.setText(self._grille_text(o, g))
-        self.pages.buttons["fan"].setText("Ventilateur ●" if fan else "Ventilateur")
-        self.pages.buttons["grille"].setText("Grille ●" if g else "Grille")
 
     def _grille_text(self, o: dict, g: dict) -> str:
         try:
@@ -552,11 +551,12 @@ class FaceInspector(QWidget):
         lay.setSpacing(8)
         self.title = muted()
         lay.addWidget(self.title)
+        lay.addWidget(section("Ajouter sur cette face"))
         row = QHBoxLayout()
-        row.setSpacing(2)
-        for label, kind, fan, tip in (("+ Entrée", "inlet", False, "I"),
-                                      ("+ Sortie", "outlet", False, "O"),
-                                      ("+ Ventilateur", "inlet", True, "N")):
+        row.setSpacing(0)
+        for label, kind, fan, tip in (("Entrée", "inlet", False, "I"),
+                                      ("Sortie", "outlet", False, "O"),
+                                      ("Ventilateur", "inlet", True, "N")):
             b = QToolButton()
             b.setText(label)
             b.setToolTip(f"Ajouter au centre de cette face ({tip} puis clic pour choisir "
