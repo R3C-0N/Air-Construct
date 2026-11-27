@@ -75,9 +75,8 @@ def set_drive(o: dict, mode: str) -> None:
         o["flow_rate"] = q
     elif mode == "velocity":
         o["velocity"] = q / a
-    elif mode == "fan":
-        if not o.get("fan"):
-            o["fan"] = {"flow_rate": None, "curve": [list(p) for p in DEFAULT_CURVE]}
+    elif mode == "fan" and not o.get("fan"):
+        o["fan"] = {"flow_rate": None, "curve": [list(p) for p in DEFAULT_CURVE]}
     if o.get("kind") == "outlet":
         o["flow_rate"] = o["velocity"] = None
 

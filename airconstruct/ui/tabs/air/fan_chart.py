@@ -3,18 +3,23 @@
 Owned by: thread "Air". Uses the instant 1D estimate (``airconstruct.fans``): the
 system curve is the pressure the enclosure needs for a total flow; the operating point
 is where the fans' curves meet it. The CFD result replaces it after the run.
+
+Drawn with QPainter rather than pyqtgraph: a pyqtgraph PlotWidget nested in the
+tab's panels crashed (segfault in QGraphicsScene's destructor) when the window was
+destroyed, and this chart only needs two lines and a dot.
 """
 
 from __future__ import annotations
 
-import pyqtgraph as pg
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+import math
+
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from ....fans import estimate_flow, system_loss
 from ...theme import COLORS, set_prop
 from .ops import M3H
-
-pg.setConfigOptions(antialias=True)
 
 
 def chart_series(case, name: str) -> dict:
@@ -35,26 +40,127 @@ def chart_series(case, name: str) -> dict:
             "total": est.flow_rate * M3H}
 
 
+def nice_step(span: float, ticks: int = 4) -> float:
+    """A round tick spacing (1, 2, 5 x 10^n) giving about ``ticks`` ticks over ``span``."""
+    if span <= 0:
+        return 1.0
+    raw = span / ticks
+    mag = 10 ** math.floor(math.log10(raw))
+    return next(m * mag for m in (1, 2, 5, 10) if m * mag >= raw)
+
+
+def _fmt(v: float) -> str:
+    return f"{v:g}".replace(".", ",")
+
+
+class Plot(QWidget):
+    """Axes, the system curve (dashed), the fan curve (blue) and the operating point."""
+
+    LEFT, BOTTOM, TOP, RIGHT = 38, 30, 14, 12
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.series: dict = {}
+        self.x_max = 1.0
+        self.y_max = 1.0
+        self.setMinimumSize(160, 190)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self) -> QSize:
+        return QSize(300, 200)
+
+    def set_series(self, s: dict) -> None:
+        self.series = s
+        xs = [p[0] for p in s.get("fan") or []] + [s["system"][-1][0] if s.get("system") else 1]
+        ys = [p[1] for p in s.get("fan") or []] + [s["point"][1] if s.get("point") else 0, 1]
+        self.x_max = max(xs) or 1.0
+        self.y_max = max(ys) * 1.25
+        self.update()
+
+    def _map(self, x: float, y: float) -> QPointF:
+        w = self.width() - self.LEFT - self.RIGHT
+        h = self.height() - self.TOP - self.BOTTOM
+        return QPointF(self.LEFT + w * x / self.x_max,
+                       self.TOP + h * (1 - min(y, self.y_max * 1.05) / self.y_max))
+
+    def _path(self, pts) -> QPainterPath:
+        path = QPainterPath()
+        for i, (x, y) in enumerate(pts):
+            pt = self._map(x, y)
+            if i == 0:
+                path.moveTo(pt)
+            else:
+                path.lineTo(pt)
+        return path
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        area = QRectF(self.LEFT, self.TOP, self.width() - self.LEFT - self.RIGHT,
+                      self.height() - self.TOP - self.BOTTOM)
+        font = QFont(self.font())
+        font.setPixelSize(10)
+        p.setFont(font)
+        grid = QPen(QColor(COLORS["divider"]), 1)
+        text = QColor(COLORS["muted"])
+        for axis, top in (("x", self.x_max), ("y", self.y_max)):
+            step = nice_step(top)
+            v = 0.0
+            while v <= top + 1e-9:
+                if axis == "x":
+                    a, b = self._map(v, 0), self._map(v, self.y_max)
+                    p.setPen(grid)
+                    p.drawLine(a, b)
+                    p.setPen(text)
+                    p.drawText(QRectF(a.x() - 20, area.bottom() + 2, 40, 12),
+                               Qt.AlignmentFlag.AlignHCenter, _fmt(round(v, 6)))
+                else:
+                    a, b = self._map(0, v), self._map(self.x_max, v)
+                    p.setPen(grid)
+                    p.drawLine(a, b)
+                    p.setPen(text)
+                    p.drawText(QRectF(0, a.y() - 6, self.LEFT - 4, 12),
+                               Qt.AlignmentFlag.AlignRight, _fmt(round(v, 6)))
+                v += step
+        p.setPen(text)
+        p.drawText(QRectF(area.left(), area.bottom() + 15, area.width(), 14),
+                   Qt.AlignmentFlag.AlignHCenter, "Débit (m³/h)")
+        p.drawText(QRectF(2, 0, 80, 12), Qt.AlignmentFlag.AlignLeft, "Pa")
+        p.setPen(QPen(QColor(COLORS["input_border"]), 1))
+        p.drawLine(area.bottomLeft(), area.bottomRight())
+        p.drawLine(area.bottomLeft(), area.topLeft())
+
+        s = self.series
+        p.setClipRect(area.adjusted(-6, -6, 6, 6))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        if s.get("system"):
+            p.setPen(QPen(QColor(COLORS["subtle"]), 2, Qt.PenStyle.DashLine))
+            p.drawPath(self._path(s["system"]))
+        accent = QColor(COLORS["accent"])
+        if s.get("fan"):
+            p.setPen(QPen(accent, 2.5))
+            p.drawPath(self._path(s["fan"]))
+            p.setBrush(accent)
+            for x, y in s["fan"]:
+                p.drawEllipse(self._map(x, y), 2.5, 2.5)
+        if s.get("point"):
+            q, dp = s["point"]
+            if s.get("fixed"):
+                p.setPen(QPen(accent, 2))
+                p.drawLine(self._map(q, 0), self._map(q, self.y_max))
+            p.setPen(QPen(QColor("white"), 2))
+            p.setBrush(QColor(COLORS["heat"]))
+            p.drawEllipse(self._map(q, dp), 6, 6)
+        p.end()
+
+
 class FanChart(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
-        self.plot = pg.PlotWidget(background=COLORS["card"])
-        self.plot.setMinimumHeight(190)
-        self.plot.setMenuEnabled(False)
-        self.plot.setMouseEnabled(False, False)
-        self.plot.hideButtons()
-        pi = self.plot.getPlotItem()
-        pi.showGrid(x=True, y=True, alpha=0.15)
-        for ax in ("left", "bottom"):
-            a = pi.getAxis(ax)
-            a.setTextPen(COLORS["muted"])
-            a.setPen(COLORS["input_border"])
-        pi.setLabel("bottom", "Débit (m³/h)")
-        pi.setLabel("left", "Pression (Pa)")
-        self.legend = pi.addLegend(offset=(-6, 6), labelTextColor=COLORS["text_secondary"])
+        self.plot = Plot()
         lay.addWidget(self.plot)
         self.caption = QLabel()
         self.caption.setWordWrap(True)
@@ -63,38 +169,27 @@ class FanChart(QWidget):
         self.series: dict = {}
 
     def show_case(self, case, name: str) -> None:
-        pi = self.plot.getPlotItem()
-        pi.clear()
-        self.legend.clear()
         if case is None:
             self.series = {}
+            self.plot.set_series({})
             self.caption.setText("Le cas n’est pas valide : point de fonctionnement indisponible.")
             return
         try:
             s = chart_series(case, name)
         except Exception as exc:  # noqa: BLE001 - never break the inspector
             self.series = {}
+            self.plot.set_series({})
             self.caption.setText(f"Point de fonctionnement indisponible : {exc}")
             return
         self.series = s
-        if s["system"]:
-            xs, ys = zip(*s["system"])
-            pi.plot(xs, ys, pen=pg.mkPen(COLORS["subtle"], width=2, style=pg.QtCore.Qt.PenStyle.DashLine),
-                    name="Boîtier (résistance)")
-        if s["fan"]:
-            xs, ys = zip(*s["fan"])
-            pi.plot(xs, ys, pen=pg.mkPen(COLORS["accent"], width=2.5), symbol="o", symbolSize=5,
-                    symbolBrush=COLORS["accent"], symbolPen=None, name="Ventilateur")
+        self.plot.set_series(s)
         if s["point"]:
             q, dp = s["point"]
-            if s["fixed"]:
-                pi.addLine(x=q, pen=pg.mkPen(COLORS["accent"], width=2))
-            pi.plot([q], [dp], pen=None, symbol="o", symbolSize=11, symbolBrush=COLORS["heat"],
-                    symbolPen=pg.mkPen("white", width=2), name="Point de fonctionnement")
             qs = f"{q:.1f}".replace(".", ",")
             dps = f"{dp:.1f}".replace(".", ",")
             what = "débit imposé" if s["fixed"] else "estimation instantanée"
-            self.caption.setText(f"Point de fonctionnement : {qs} m³/h sous {dps} Pa ({what}, "
-                                 "le calcul donnera la valeur réelle).")
+            self.caption.setText(f"Point de fonctionnement (orange) : {qs} m³/h sous {dps} Pa "
+                                 f"({what}). En bleu le ventilateur, en tirets la résistance du "
+                                 "boîtier. Le calcul donnera la valeur réelle.")
         else:
             self.caption.setText("")
