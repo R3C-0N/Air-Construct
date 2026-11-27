@@ -16,7 +16,8 @@ Readers:
 - STL, ASCII (several ``solid`` blocks = several bodies) or binary;
 - STEP (.step / .stp) through the optional ``cascadio`` package (OpenCascade), which
   tessellates the file to glTF binary; each part instance of the assembly becomes a
-  body. glTF is in metres and Y-up: we turn it back to Z-up.
+  body. Its output is in metres and keeps the CAD frame (Z up), as checked by
+  tests/test_cad.py::test_step_box.
 
 STL files carry no unit: the caller gives the scale (millimetres by default).
 """
@@ -280,10 +281,8 @@ def read_step(path: str | Path) -> list[Body]:
             raise CadError(f"{path.name} : lecture STEP impossible ({exc})") from exc
         if not out.is_file() or out.stat().st_size == 0:
             raise CadError(f"{path.name} : lecture STEP impossible (fichier vide ou invalide)")
-        bodies = read_glb(out.read_bytes(), path.stem)
-    # glTF is Y-up, CAD files are Z-up: (x, y, z)_gltf -> (x, -z, y)
-    return [Body(b.name, b.triangles[..., [0, 2, 1]] * np.array([1.0, -1.0, 1.0]))
-            for b in bodies]
+        # cascadio keeps the CAD frame (Z up) and converts lengths to metres
+        return read_glb(out.read_bytes(), path.stem)
 
 
 _COMPONENTS = {5120: "i1", 5121: "u1", 5122: "<i2", 5123: "<u2", 5125: "<u4", 5126: "<f4"}
