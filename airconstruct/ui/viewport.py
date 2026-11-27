@@ -41,7 +41,7 @@ def highlight_items(items: list[SceneItem], keys: list[str]) -> list[SceneItem]:
             out.append(dataclasses.replace(it, color=HIGHLIGHT, kwargs={**kw, "line_width": 3}))
         else:
             kw.update(show_edges=True, edge_color=HIGHLIGHT, line_width=3)
-            out.append(dataclasses.replace(it, kwargs=kw, opacity=max(it.opacity, 0.8)))
+            out.append(dataclasses.replace(it, kwargs=kw, opacity=max(it.opacity, it.highlight_opacity)))
     return out
 
 
