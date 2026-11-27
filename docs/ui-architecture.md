@@ -111,8 +111,9 @@ dropped from the selection automatically.
 A tab describes the scene with `SceneItem`s (`view.py`); set `key` on an item to make
 it clickable and highlightable. `view.geometry_items(case)` and
 `view.result_items(case, regions, field)` build the standard scenes. Picking emits
-the item's key into the selection (Ctrl or Shift adds). `ctx.viewport.scene.plotter`
-is the pyvistaqt `QtInteractor` (None when 3D is disabled, as in tests) for widgets
+the item's key into the selection (Ctrl or Shift adds). `ctx.viewport.frame(keys=None)`
+points the camera at those objects (default: the selection) and returns their bounds.
+`ctx.viewport.scene.plotter` is the pyvistaqt `QtInteractor` (None when 3D is disabled, as in tests) for widgets
 such as move/resize handles.
 
 **`ctx.alerts`** (`AlertCenter`): `Alert(level, message, tab, target)`. Level
