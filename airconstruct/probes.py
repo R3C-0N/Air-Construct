@@ -2,7 +2,7 @@
 user-placed points, every ``solver.probe_interval`` iterations.
 
 Owned by: workstream "results". Works while the solver runs (the UI can poll it) and
-after. OpenFOAM writes postProcessing/[<region>/]probes_<region>/<start time>/<field>,
+after. OpenFOAM v2406 writes postProcessing/probes_<region>/<region>/<start time>/<field>,
 a new <start time> folder each time the runner restarts the solver for a new phase;
 they are stitched together here. Columns are matched to the case's probes by
 position, so a probe OpenFOAM could not place (outside its region's mesh) is
@@ -45,9 +45,14 @@ class ProbeSeries:
 
 
 def _start_dirs(case_dir: Path, fo: str) -> list[Path]:
+    """Start-time folders of a probes function object. OpenFOAM v2406 writes
+    postProcessing/probes_<region>/<region>/<t>/; other versions put the region first
+    or leave it out, so look one level below the function object's folder too."""
     dirs = []
     for base in (case_dir / "postProcessing").glob(f"**/{fo}"):
-        for d in base.iterdir():
+        for d in [*base.iterdir(), *(c for b in base.iterdir() if b.is_dir() for c in b.iterdir())]:
+            if not d.is_dir():
+                continue
             try:
                 float(d.name)
             except ValueError:
@@ -106,6 +111,8 @@ def read_probes(case: Case, case_dir: str | Path) -> dict[str, ProbeSeries]:
                 if fname == "T" and points:
                     cols = [_column(points, p.point.as_tuple()) for p in mine]
                 rows.update(data)
+        if not cols and t_rows:  # no readable header: OpenFOAM keeps the given order
+            cols = list(range(len(mine)))
         if not cols:
             continue
         for p, col in zip(mine, cols, strict=True):

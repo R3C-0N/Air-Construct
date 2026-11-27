@@ -29,6 +29,14 @@ def test_probes_record_history():
     p = read_probes(case, res.case_dir)
     jet, cpu = p["inlet_jet"], p["cpu_core"]
     print(f"{len(jet.iterations)} samples, jet {jet.last()}, cpu {cpu.last()}")
+    if not jet.iterations:  # say why: where the solver wrote, what it said about probes
+        pp = res.case_dir / "postProcessing"
+        print("postProcessing:", sorted(str(f.relative_to(pp)) for f in pp.rglob("*"))
+              if pp.is_dir() else "missing")
+        for f in sorted(pp.rglob("T"))[:2] if pp.is_dir() else []:
+            print(f, f.read_text()[:600])
+        log = (res.case_dir / "log.chtMultiRegionSimpleFoam").read_text(errors="replace")
+        print("\n".join(ln for ln in log.splitlines() if "robe" in ln or "unction" in ln)[:3000])
     assert len(jet.iterations) > 10 and jet.iterations == sorted(set(jet.iterations))
     assert jet.iterations[-1] > 0.8 * res.iterations  # samples continue across phases
     assert 0.3 < jet.last()[1] < 3.0  # ~1 m/s inlet jet
