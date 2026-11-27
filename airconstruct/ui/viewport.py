@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -46,7 +47,12 @@ def highlight_items(items: list[SceneItem], keys: list[str]) -> list[SceneItem]:
 
 
 class Viewport(QWidget):
-    """SceneView + camera buttons + a slot for the active tab's toolbar."""
+    """SceneView + camera buttons + a slot for the active tab's toolbar.
+
+    ``redrawn`` is emitted after every redraw: a tab that adds widgets to the scene
+    (move/resize handles) re-adds them then."""
+
+    redrawn = Signal()
 
     def __init__(self, selection: Selection, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -106,8 +112,27 @@ class Viewport(QWidget):
         self.items = list(items)
         self._redraw(reset_camera)
 
+    def bounds_of(self, keys) -> tuple[float, ...] | None:
+        """Union of the bounds of the drawn items with these selection keys."""
+        wanted = set(keys)
+        boxes = [it.mesh.bounds for it in self.items if it.key in wanted]
+        if not boxes:
+            return None
+        return (min(b[0] for b in boxes), max(b[1] for b in boxes),
+                min(b[2] for b in boxes), max(b[3] for b in boxes),
+                min(b[4] for b in boxes), max(b[5] for b in boxes))
+
+    def frame(self, keys=None) -> tuple[float, ...] | None:
+        """Point the camera at the objects ``keys`` (default: the selection).
+        Returns the framed bounds, or None when none of them is drawn."""
+        bounds = self.bounds_of(self.selection.keys if keys is None else keys)
+        if bounds is not None:
+            self.scene.frame_bounds(bounds)
+        return bounds
+
     def _redraw(self, reset_camera: bool = False) -> None:
         self.scene.draw(highlight_items(self.items, self.selection.keys), reset_camera)
+        self.redrawn.emit()
 
     def _on_picked(self, key, additive: bool) -> None:
         self.selection.select(key, additive)

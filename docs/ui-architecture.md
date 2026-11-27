@@ -39,7 +39,16 @@ touching the same files.
 | `ui/tabs/volume/` | thread Volume d'air | tab 3 |
 | `ui/tabs/simulation/` | thread Simulation | tab 4 |
 | `ui/tabs/results/` | thread Résultats | tab 5 |
-| `ui/form.py` | temporary | the old case form, shown by the Modèle tab until the tabs have their own editors |
+| `ui/form.py` | temporary | the old case form; no longer shown (the Modèle tab has its own editor), kept until the other tabs have theirs, then removed |
+
+The Modèle tab (`ui/tabs/model/`) is a model for the others: the operations are plain
+functions on the project data (`geometry.py`, tested without Qt), the panels only turn
+user input into `project.edit(...)` calls. It stores its UI metadata under
+`data["ui"]["model"]` (`groups`, `hidden`, `locked`, `kinds`), shows its move/resize
+handles with `plotter.add_box_widget` (re-added on `Viewport.redrawn`), and provides
+the "Nouveau projet" dialog the shell opens from Fichier > Nouveau
+(`MainWindow.ask_new_project`, replaceable in tests). A side panel made of several
+cards sets the Qt property `cards` so the shell does not wrap it in another card.
 
 A tab thread works inside its own `ui/tabs/<key>/` package (add as many modules as
 needed there) and its tests in `tests/test_tab_<key>.py`. If it needs something
@@ -111,8 +120,9 @@ dropped from the selection automatically.
 A tab describes the scene with `SceneItem`s (`view.py`); set `key` on an item to make
 it clickable and highlightable. `view.geometry_items(case)` and
 `view.result_items(case, regions, field)` build the standard scenes. Picking emits
-the item's key into the selection (Ctrl or Shift adds). `ctx.viewport.scene.plotter`
-is the pyvistaqt `QtInteractor` (None when 3D is disabled, as in tests) for widgets
+the item's key into the selection (Ctrl or Shift adds). `ctx.viewport.frame(keys=None)`
+points the camera at those objects (default: the selection) and returns their bounds.
+`ctx.viewport.scene.plotter` is the pyvistaqt `QtInteractor` (None when 3D is disabled, as in tests) for widgets
 such as move/resize handles.
 
 **`ctx.alerts`** (`AlertCenter`): `Alert(level, message, tab, target)`. Level

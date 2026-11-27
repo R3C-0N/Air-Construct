@@ -24,7 +24,7 @@ from ..case import Case, Component, Opening, OpeningKind, WallMode
 from ..fans import air_density, estimate_flow, opening_velocity
 from ..materials import GASES, SOLIDS
 from ..mesh import FACE_AXES, grille_depth, grille_zone, plan_mesh
-from .dictionary import write_foam_dict
+from .dictionary import Raw, write_foam_dict
 
 SOLVER_APP = "chtMultiRegionSimpleFoam"
 K0 = 273.15
@@ -51,8 +51,8 @@ def _fluid_thermo(case: Case) -> dict:
     }
 
 
-def _solid_thermo(c: Component) -> dict:
-    m = SOLIDS[c.material]
+def _solid_thermo(case: Case, c: Component) -> dict:
+    m = case.solid(c.material)
     return {
         "thermoType": {
             "type": "heSolidThermo", "mixture": "pureMixture", "transport": "constIso",
@@ -105,7 +105,10 @@ def _control_dict(case: Case) -> dict:
         "runTimeModifiable": True,
         # SIGUSR1 = write now and stop: used by the runner to end a phase cleanly
         "OptimisationSwitches": {"stopAtWriteNowSignal": 10},
-        **({"functions": probe_functions(case)} if case.probes else {}),
+        # live monitors (function objects) written by the runner, see foam/monitors.py,
+        # then the probes of the case
+        "functions": {"monitors": Raw('#includeIfPresent "monitors"'),
+                      **(probe_functions(case) if case.probes else {})},
     }
 
 
@@ -245,7 +248,7 @@ def write_case_setup(case: Case, case_dir: Path) -> None:
     write_foam_dict(sysd / air / "decomposeParDict", _decompose(max(1, case.solver.cores)))
     for comp in case.components:
         cs = d / "constant" / comp.name
-        write_foam_dict(cs / "thermophysicalProperties", _solid_thermo(comp))
+        write_foam_dict(cs / "thermophysicalProperties", _solid_thermo(case, comp))
         write_foam_dict(cs / "radiationProperties", {"radiation": "off", "radiationModel": "none"})
         if comp.power > 0:
             write_foam_dict(cs / "fvOptions", _heat_source(comp))

@@ -247,6 +247,17 @@ class SceneView(QWidget):
         p.reset_camera()
         p.render()
 
+    def frame_bounds(self, bounds) -> None:
+        """Point the camera at ``bounds`` (xmin, xmax, ymin, ymax, zmin, zmax)."""
+        p = self.plotter
+        if p is None:
+            return
+        x0, x1, y0, y1, z0, z1 = bounds
+        pad = 0.6 * max(x1 - x0, y1 - y0, z1 - z0, 1e-9)
+        p.reset_camera(bounds=(x0 - pad, x1 + pad, y0 - pad, y1 + pad, z0 - pad, z1 + pad))
+        p.set_focus(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2))
+        p.render()
+
     def show_case(self, case: Case, reset_camera: bool = False) -> None:
         self.draw(geometry_items(case), reset_camera)
 
