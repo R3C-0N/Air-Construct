@@ -185,7 +185,7 @@ def test_quick_estimate_preview(qapp, tmp_path, settings):
     assert "Estimation rapide" in res.results.headline.text()
     assert res.results.table.rowCount() == 4
     assert res.results.table.item(0, 0).text() == "cpu"  # 15 W: hottest
-    t_cpu = float(res.results.table.item(0, 2).text())
+    t_cpu = float(res.results.table.item(0, 3).text().replace(",", "."))
     assert 25.0 < t_cpu < 300.0
     win.close()
 
@@ -270,14 +270,16 @@ def test_window_with_real_results_module(qapp, tmp_path, settings):
     assert outcome.success, outcome.errors
     res = win.tabs["results"]
     assert res.results.table.item(0, 0).text() == "cpu"
-    assert float(res.results.table.item(0, 2).text()) == pytest.approx(76.9, abs=0.5)
+    assert float(res.results.table.item(0, 3).text().replace(",", ".")) == pytest.approx(76.9, abs=0.5)
     assert set(outcome.regions) >= {"air", "cpu"}
     assert res.field_combo.isEnabled()
     win.goto_tab("results")
-    assert any(i.name == "air_slice" for i in win.viewport.items)  # result fields drawn
+    names = [i.name for i in win.viewport.items]
+    assert any(n.startswith("slice") and n.endswith(":air") for n in names)  # fields drawn
+    assert "part:cpu" in names
     res.geometry_button.setChecked(True)
     win.refresh_scene()
-    assert not any(i.name == "air_slice" for i in win.viewport.items)
+    assert not any(i.name.startswith("slice") for i in win.viewport.items)
     res.save_report()
     assert res.last_report is not None and res.last_report.exists()
     win.close()
