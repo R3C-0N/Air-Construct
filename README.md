@@ -162,6 +162,15 @@ mesh cut in the Volume d'air tab). A surface that is not closed may be filled wr
 the import dialog says which. *Remplacer par sa boîte* in the inspector turns the part
 back into a plain block.
 
+## Claude control (MCP)
+
+Claude can drive the open window through an MCP server shipped with the app
+(`Air-Construct-MCP.exe` next to `Air-Construct.exe`, or `airconstruct-mcp` from
+source): look at the 3D view, build the model, set up the air and the mesh, run and
+read the results, while you watch. A "Claude" pill in the top bar shows each action
+and lets you pause it; every change is an undo step. Setup and tool list:
+[docs/claude-mcp.md](docs/claude-mcp.md).
+
 ## Run control and live results
 
 - **Live monitors**: OpenFOAM function objects (`foam/monitors.py`) print, every
