@@ -206,7 +206,8 @@ def read(path: str | Path, unit: str = "mm") -> list[Body]:
 
 _FLOAT = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _VERTEX = re.compile(rf"vertex\s+({_FLOAT})\s+({_FLOAT})\s+({_FLOAT})")
-_SOLID = re.compile(r"^\s*solid\b[ \t]*([^\r\n]*)$(.*?)^\s*endsolid\b", re.MULTILINE | re.DOTALL)
+# \r?$ : files written on Windows end their lines with \r\n ($ only matches before \n)
+_SOLID = re.compile(r"^\s*solid\b[ \t]*([^\r\n]*)\r?$(.*?)^\s*endsolid\b", re.MULTILINE | re.DOTALL)
 
 
 def read_stl(path: str | Path) -> list[Body]:
