@@ -14,6 +14,7 @@ Start it with ``airconstruct-gui [case.yaml] [--setup-openfoam]`` or ``python -m
 
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import cad
 from ..case import Case
 from ..foam_setup import RESUME_FLAG
 from .alerts import Alert, AlertCenter
@@ -56,6 +58,7 @@ from .widgets.toggle import ToggleSwitch
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "electronics_box.yaml"
 MAX_RECENT = 8
+OPEN_FILTER = f"Cas Air-Construct (*.yaml *.yml);;{cad.FILE_FILTER}"
 
 
 def default_case() -> Case:
@@ -158,9 +161,11 @@ class MainWindow(QMainWindow):
             work_dir=lambda: self.work_dir,
         )
         self.confirm_discard: Callable[[], bool] = self._ask_save_changes
+        from .tabs.model.cad_dialog import ask_cad_import
         from .tabs.model.new_project import ask_new_project
 
         self.ask_new_project = ask_new_project
+        self.ask_cad_import = ask_cad_import
 
         self.tabs: dict[str, StepTab] = {}
         self.tab_order: list[str] = []
@@ -524,6 +529,8 @@ class MainWindow(QMainWindow):
         return self.new_case(choice)
 
     def load_case(self, path: Path) -> bool:
+        if Path(path).suffix.lower() in cad.SUFFIXES:
+            return self.new_project_from_cad(Path(path))
         if self.runner.running or not self.confirm_discard():
             return False
         try:
@@ -535,9 +542,23 @@ class MainWindow(QMainWindow):
         self.goto_tab(self.tab_order[0])
         return True
 
+    def new_project_from_cad(self, path: Path) -> bool:
+        """A CAD file opened (Fichier > Ouvrir, command line): a new, unsaved project
+        built around its parts, after the import dialog (``ask_cad_import`` is
+        replaceable, for tests)."""
+        from .tabs.model.cadparts import new_project
+
+        if self.runner.running:
+            return False
+        choice = self.ask_cad_import(self, path)
+        if choice is None:
+            return False
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(path).stem).strip("_-")
+        name = stem if re.match(r"^[A-Za-z][A-Za-z0-9_-]*$", stem) else "projet_cao"
+        return self.new_case(new_project(choice.bodies, name, choice.source, choice.material))
+
     def open_case(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Ouvrir un cas", "",
-                                              "Cas Air-Construct (*.yaml *.yml)")
+        path, _ = QFileDialog.getOpenFileName(self, "Ouvrir un cas", "", OPEN_FILTER)
         if path:
             self.load_case(Path(path))
 

@@ -213,7 +213,7 @@ def test_templates_are_valid_cases():
         assert not geo.overlaps(data) and not geo.outside(data), key
     empty = ts["empty"].build("vide")
     assert empty["components"] == [] and empty["openings"] == []
-    assert not ts["cad"].enabled
+    assert ts["cad"].enabled  # imports a CAD file (test_tab_model_cad.py)
 
 
 # ---------------------------------------------------------------------- the tab

@@ -510,8 +510,11 @@ def rename(data: dict, old: str, new: str) -> None:
 # --------------------------------------------------------------------- checks
 def overlaps(data: dict) -> list[tuple[str, str, list[float]]]:
     """Pairs of parts whose volumes intersect, with the overlap depth per axis.
-    Parts that only touch (stacked, side by side) do not count."""
-    parts = [(str(c.get("name")), *lo_hi(c)) for c in data.get("components") or []]
+    Parts that only touch (stacked, side by side) do not count, nor parts with an
+    imported CAD shape: their boxes overlap in any assembly (a chip in the recess of
+    a heat sink) without the shapes doing so."""
+    parts = [(str(c.get("name")), *lo_hi(c)) for c in data.get("components") or []
+             if not c.get("shape")]
     out = []
     for i, (a, alo, ahi) in enumerate(parts):
         for b, blo, bhi in parts[i + 1:]:

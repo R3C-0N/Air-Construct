@@ -10,6 +10,9 @@ Strategy (MVP, axis-aligned boxes only):
   2. topoSet + createPatch: each Opening becomes its own patch (named opening.name),
      selected with a thin boxToFace on the enclosure face.
   3. topoSet: one cellZone per component (boxToCell) + cellZone "air" for the rest.
+     A component with an imported CAD shape gets the cells of its box whose centre is
+     inside the surface instead (labelToCell, cells numbered as blockMesh does for a
+     single block: x fastest, then y, then z): a staircase of the real shape.
   4. splitMeshRegions -cellZonesOnly -overwrite: one region per zone. Interfaces are
      named "<a>_to_<b>" (mappedWall), as OpenFOAM does.
   5. topoSet -region air: one cellZone "grille_<opening>" per grille, the porous layer
@@ -23,7 +26,9 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .case import Case, Face, Opening
+import numpy as np
+
+from .case import Case, Component, Face, Opening
 from .foam.dictionary import write_foam_dict
 
 # precision level -> (base cells along the largest enclosure side, min cells per segment)
@@ -70,6 +75,23 @@ class AxisGrid:
 
     def min_spacing(self) -> float:
         return min(min(s) for s in self.spacings())
+
+    def nodes(self) -> np.ndarray:
+        """Coordinates of the n + 1 grid planes (graded segments as blockMesh does)."""
+        out = [self.breakpoints[0]]
+        for a, b, n, r in zip(self.breakpoints, self.breakpoints[1:], self.cells, self._ratios()):
+            if n == 1 or abs(r - 1.0) < 1e-12:
+                w = np.full(n, 1.0)
+            else:
+                w = (r ** (1.0 / (n - 1))) ** np.arange(n)
+            x = a + (b - a) * np.cumsum(w) / w.sum()
+            x[-1] = b
+            out.extend(x.tolist())
+        return np.array(out)
+
+    def centres(self) -> np.ndarray:
+        x = self.nodes()
+        return (x[:-1] + x[1:]) / 2
 
 
 @dataclass
@@ -209,6 +231,30 @@ def plan_mesh(case: Case) -> MeshPlan:
     return MeshPlan(cell_size=h, divisions=div, n_cells=n, warnings=warnings, axes=axes)  # type: ignore[arg-type]
 
 
+def shape_cells(plan: MeshPlan, c: Component) -> np.ndarray:
+    """blockMesh labels (sorted) of the cells of ``c``'s box whose centre is inside its
+    imported shape; empty when the shape is too thin for the grid."""
+    assert plan.axes is not None and c.shape is not None
+    lo, hi = c.box.min, c.box.max
+    centres = [g.centres() for g in plan.axes]
+    idx = [np.nonzero((x > lo[i]) & (x < hi[i]))[0] for i, x in enumerate(centres)]
+    if any(len(i) == 0 for i in idx):
+        return np.zeros(0, dtype=np.int64)
+    from .cad import voxelize
+
+    inside = voxelize(c.shape.triangles_in(c.box), *(centres[i][idx[i]] for i in range(3)))
+    ii, jj, kk = np.nonzero(inside)
+    nx, ny, _ = plan.divisions
+    labels = idx[0][ii] + nx * (idx[1][jj] + ny * idx[2][kk])
+    return np.sort(labels.astype(np.int64))
+
+
+def _labels(labels: np.ndarray) -> str:
+    """A label list for topoSet, 20 per line."""
+    rows = [" ".join(str(v) for v in labels[i:i + 20]) for i in range(0, len(labels), 20)]
+    return "(\n" + "\n".join(rows) + "\n)"
+
+
 def _grading(g: AxisGrid) -> list:
     return [[round(b - a, 12), c, round(r, 9)]
             for a, b, c, r in zip(g.breakpoints, g.breakpoints[1:], g.cells, g._ratios())]
@@ -261,7 +307,17 @@ def write_mesh_dicts(case: Case, case_dir: Path, plan: MeshPlan | None = None) -
     for i, c in enumerate(case.components):
         lo = [v + shrink for v in c.box.min]
         hi = [v - shrink for v in c.box.max]
-        zone_actions.append(_action(c.name, "cellSet", "new", "boxToCell", {"box": _box(lo, hi)}))
+        labels = shape_cells(plan, c) if c.shape is not None else None
+        if labels is not None and len(labels) == 0:
+            plan.warnings.append(f"component {c.name!r}: its shape is thinner than the mesh "
+                                 "cells, it is meshed as its whole box")
+            labels = None
+        if labels is None:
+            zone_actions.append(_action(c.name, "cellSet", "new", "boxToCell",
+                                        {"box": _box(lo, hi)}))
+        else:
+            zone_actions.append(_action(c.name, "cellSet", "new", "labelToCell",
+                                        {"value": _labels(labels)}))
         for prev in case.components[:i]:  # overlaps belong to the first component listed
             zone_actions.append(_action(c.name, "cellSet", "subtract", "cellToCell", {"set": prev.name}))
     air = case.fluid_region
