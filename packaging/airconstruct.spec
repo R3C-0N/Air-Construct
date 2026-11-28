@@ -26,6 +26,7 @@ hiddenimports = (
         "vtkmodules.qt.QVTKRenderWindowInteractor",
         "vtkmodules.util.numpy_support",
         "matplotlib.backends.backend_agg",
+        "cascadio",  # STEP import, imported lazily by airconstruct.cad
     ]
 )
 

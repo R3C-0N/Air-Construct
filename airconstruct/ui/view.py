@@ -66,8 +66,38 @@ def _heat_color(power: float, p_max: float) -> str:
     return f"#ff{g:02x}20"
 
 
+def part_mesh(lo, hi, shape: dict | None = None):
+    """What a part looks like: its box, or its imported CAD shape (``shape`` is the
+    component's ``shape`` dict) fitted in the box. A shape that cannot be read is
+    drawn as the box."""
+    import pyvista as pv
+
+    if shape and shape.get("data"):
+        try:
+            from ..cad import placed
+
+            tris = placed(str(shape["data"]), lo, hi)
+        except ValueError:
+            tris = None
+        if tris is not None and len(tris):
+            import numpy as np
+
+            n = len(tris)
+            faces = np.hstack([np.full((n, 1), 3), np.arange(3 * n).reshape(n, 3)])
+            return pv.PolyData(tris.reshape(-1, 3), faces.ravel()).clean()
+    return pv.Box((lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]))
+
+
+def part_edges(shape: dict | None, color: str = "#333333", width: int = 1) -> dict:
+    """add_mesh options for a part: box edges drawn, a CAD shape smooth (its triangle
+    edges would hide it)."""
+    if shape and shape.get("data"):
+        return {"smooth_shading": True, "split_sharp_edges": True}
+    return {"show_edges": True, "edge_color": color, "line_width": width}
+
+
 def geometry_items(case: Case) -> list[SceneItem]:
-    """Enclosure outline, component boxes (heat sources warm coloured), openings."""
+    """Enclosure outline, components (heat sources warm coloured), openings."""
     import pyvista as pv
 
     E = case.enclosure.as_tuple()
@@ -76,8 +106,9 @@ def geometry_items(case: Case) -> list[SceneItem]:
     p_max = max((c.power for c in case.components), default=0.0)
     for c in case.components:
         lo, hi = c.box.min, c.box.max
-        mesh = pv.Box((lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]))
-        edges = {"show_edges": True, "edge_color": "#333333", "line_width": 1}
+        shape = c.shape.model_dump() if c.shape is not None else None
+        mesh = part_mesh(lo, hi, shape)
+        edges = part_edges(shape)
         if c.power > 0:
             items.append(SceneItem(c.name, mesh, _heat_color(c.power, p_max), kwargs=edges,
                                    key=f"component:{c.name}"))

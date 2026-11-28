@@ -17,7 +17,9 @@ dependencies = [
 
 [project.optional-dependencies]
 results = ["pyvista>=0.43"]
-ui = ["PySide6>=6.6", "pyvistaqt>=0.11", "pyvista>=0.43", "superqt>=0.6", "pyqtgraph>=0.13.7"]
+cad = ["cascadio>=0.1"]  # STEP import (OpenCascade); STL needs nothing
+ui = ["PySide6>=6.6", "pyvistaqt>=0.11", "pyvista>=0.43", "superqt>=0.6", "pyqtgraph>=0.13.7",
+      "cascadio>=0.1"]
 dev = ["pytest>=7", "ruff>=0.4"]
 
 [project.scripts]

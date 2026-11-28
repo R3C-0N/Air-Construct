@@ -132,6 +132,8 @@ def check_case(case: Case) -> list[Diagnosis]:
     comps = case.components
     for i, a in enumerate(comps):
         for b in comps[:i]:
+            if a.shape is not None or b.shape is not None:
+                continue  # CAD parts: boxes overlap in any assembly, the shapes need not
             if all(a.box.min[k] < b.box.max[k] - 1e-12 and b.box.min[k] < a.box.max[k] - 1e-12
                    for k in range(3)):
                 out.append(Diagnosis(

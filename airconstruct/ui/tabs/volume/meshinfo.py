@@ -177,11 +177,15 @@ class Check:
 
 def _segment_solid(case: Case, p: MeshPlan) -> tuple[list[list[float]], set[tuple[int, int, int]]]:
     """Segment-level grid (between breakpoints) and the set of solid segment cells.
-    Every part edge is a breakpoint, so a segment cell is all solid or all air."""
+    Every part edge is a breakpoint, so a segment cell is all solid or all air.
+    Parts with an imported CAD shape are left out: their box is not all solid (a
+    finned heat sink, a duct), so they never count as blocking the air."""
     bps = [g.breakpoints for g in p.axes]
     mids = [[(a + b) / 2 for a, b in itertools.pairwise(bp)] for bp in bps]
     solid = set()
     for c in case.components:
+        if c.shape is not None:
+            continue
         lo, hi = c.box.min, c.box.max
         rng = [[k for k, m in enumerate(mids[i]) if lo[i] < m < hi[i]] for i in range(3)]
         for i in rng[0]:
@@ -375,6 +379,13 @@ def cut_grid(case: Case, axis: int, position: float, p: MeshPlan | None = None):
             continue
         inside = ((A > lo[others[0]]) & (A < hi[others[0]])
                   & (B > lo[others[1]]) & (B < hi[others[1]]))
+        if comp.shape is not None:  # the cells the mesh gives the CAD shape
+            from ....cad import voxelize
+
+            pts: list = [None, None, None]
+            pts[others[0]], pts[others[1]], pts[axis] = ca[0], ca[1], [position]
+            in_shape = voxelize(comp.shape.triangles_in(comp.box), *pts)
+            inside &= np.squeeze(in_shape, axis=axis).ravel(order="F")
         solid[inside] = 1
     grid.cell_data["size_mm"] = size
     grid.cell_data["solid"] = solid
