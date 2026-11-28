@@ -30,6 +30,7 @@ touching the same files.
 | `ui/viewport.py`, `ui/view.py` | shell | the one 3D viewport, scene items, picking, highlight, camera presets |
 | `ui/run.py`, `ui/worker.py` | shell | `RunController` (start/stop/progress) around the background worker |
 | `ui/statusbar.py` | shell | status card: messages, alerts menu, units menu, shortcuts dialog |
+| `ui/assistant/` | assistant | Claude control: local bridge server running MCP commands in this window, the "Claude" pill of the top bar (see `docs/claude-mcp.md`) |
 | `ui/theme.py`, `ui/fonts/` | shell | colours (`COLORS`), Inter font, the one style sheet |
 | `ui/widgets/` | shared | widgets several tabs use (`Card`, `ObjectTree`, `StepNav`, `ToggleSwitch`); add new shared widgets here |
 | `ui/tabs/base.py` | shell | `StepTab` base class |

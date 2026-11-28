@@ -24,6 +24,7 @@ dev = ["pytest>=7", "ruff>=0.4"]
 
 [project.scripts]
 airconstruct = "airconstruct.cli:main"
+airconstruct-mcp = "airconstruct.assistant.mcp_server:main"
 
 [project.gui-scripts]
 airconstruct-gui = "airconstruct.ui.app:main"

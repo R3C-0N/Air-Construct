@@ -66,4 +66,15 @@ exe = EXE(  # noqa: F821
     console=False,
     icon=str(icon) if icon.exists() else None,
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="Air-Construct")  # noqa: F821
+# Same program with a console: the MCP server Claude starts over stdin/stdout
+# (launcher.py runs airconstruct.assistant.mcp_server when its name ends in "-MCP").
+mcp_exe = EXE(  # noqa: F821
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="Air-Construct-MCP",
+    console=True,
+    icon=str(icon) if icon.exists() else None,
+)
+coll = COLLECT(exe, mcp_exe, a.binaries, a.datas, name="Air-Construct")  # noqa: F821

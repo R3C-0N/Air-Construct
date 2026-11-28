@@ -132,6 +132,7 @@ class MainWindow(QMainWindow):
         open_report: bool = True,
         preview_fn: Callable[[Case], dict[str, float]] | None = None,
         settings: QSettings | None = None,
+        assistant: bool = False,
     ) -> None:
         super().__init__()
         ensure_theme()
@@ -167,6 +168,11 @@ class MainWindow(QMainWindow):
         self.ask_new_project = ask_new_project
         self.ask_cad_import = ask_cad_import
 
+        # Claude control (MCP): started by main(), and when the user turns it on
+        from .assistant import AssistantBridge
+
+        self.assistant = AssistantBridge(self)
+
         self.tabs: dict[str, StepTab] = {}
         self.tab_order: list[str] = []
         self.current_tab: StepTab | None = None
@@ -198,6 +204,8 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._update_run_action()
         self.refresh_scene(reset_camera=True)
+        if assistant and self.assistant_allowed():
+            self.assistant.start()
 
     # ------------------------------------------------------------------ layout
     def _action(self, text: str, slot, keys=(), parent_menu: QMenu | None = None) -> QAction:
@@ -224,6 +232,12 @@ class MainWindow(QMainWindow):
         self._action("Enregistrer &sous…", self.save_case_as, ["Ctrl+Shift+S"], m)
         m.addSeparator()
         self._action("Dossier des &calculs…", self.choose_work_dir, (), m)
+        self.assistant_action = self._action("Autoriser le pilotage par &Claude",
+                                             self.set_assistant_allowed, (), m)
+        self.assistant_action.setCheckable(True)
+        self.assistant_action.setChecked(self.assistant_allowed())
+        self.assistant_action.setToolTip("Claude (via MCP) peut lire et modifier le projet "
+                                         "ouvert et lancer les calculs, sous vos yeux")
         m.addSeparator()
         self._action("&Quitter", self.close, [QKeySequence.StandardKey.Quit], m)
 
@@ -318,6 +332,9 @@ class MainWindow(QMainWindow):
         self.expert.changed.connect(self.expert_check.setChecked)
         tl.addSpacing(8)
         tl.addWidget(self.expert_check)
+        from .assistant import AssistantIndicator
+
+        self.assistant_indicator = AssistantIndicator(self.assistant)
 
         top = QHBoxLayout()
         top.setSpacing(12)
@@ -325,6 +342,7 @@ class MainWindow(QMainWindow):
         top.addStretch(1)
         top.addWidget(self.tab_bar)
         top.addStretch(1)
+        top.addWidget(self.assistant_indicator)
         top.addWidget(tools_card)
 
         # body: tab panels (cards) on each side of the shared viewport
@@ -631,6 +649,20 @@ class MainWindow(QMainWindow):
         self.goto_tab("simulation")
         return sim.offer_setup()
 
+    # ------------------------------------------------------------------ Claude
+    def assistant_allowed(self) -> bool:
+        return bool(self.settings.value("assistant/enabled", True, type=bool))
+
+    def set_assistant_allowed(self, on: bool) -> None:
+        """Fichier > Autoriser le pilotage par Claude."""
+        self.settings.setValue("assistant/enabled", bool(on))
+        if on:
+            self.assistant.start()
+            self.show_message("Claude peut piloter Air-Construct (serveur MCP airconstruct-mcp)")
+        else:
+            self.assistant.stop()
+            self.show_message("Pilotage par Claude coupé")
+
     def closeEvent(self, event) -> None:
         if self.runner.running:
             ans = QMessageBox.question(self, "Quitter",
@@ -643,6 +675,7 @@ class MainWindow(QMainWindow):
         elif not self.confirm_discard():
             event.ignore()
             return
+        self.assistant.stop()
         for tab in self.tabs.values():
             tab.closing()
         self.viewport.close_plotter()
@@ -657,7 +690,7 @@ def main(argv: list[str] | None = None) -> int:
     setup = RESUME_FLAG in argv[1:]
     args = [a for a in argv[1:] if a != RESUME_FLAG]
     case_path = Path(args[0]) if args else None
-    win = MainWindow()
+    win = MainWindow(assistant=True)
     if case_path is not None:
         win.load_case(case_path)
     win.show()
