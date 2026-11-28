@@ -245,7 +245,7 @@ class MainWindow(QMainWindow):
             sig.connect(self._sync_undo_actions)
         self._sync_undo_actions()
         self.run_action = self._action("Lancer le calcul", self.start_run, ["Ctrl+R"])
-        self._action("Tout désélectionner", self.selection.clear, ["Esc"])
+        self._action("Tout désélectionner", self.escape, ["Esc"])
 
     def _sync_undo_actions(self, *_args) -> None:
         stack, locked = self.project.undo_stack, self.project.locked
@@ -409,10 +409,17 @@ class MainWindow(QMainWindow):
             if w is not None:
                 stack.setCurrentWidget(w)
         self.viewport.set_tab_toolbar(tab.viewport_toolbar())
+        self.viewport.drag_handler = tab.drag
+        self.viewport.click_handler = tab.click
         for a in tab.actions():
             a.setEnabled(True)
         tab.activated()
         self.refresh_scene()
+
+    def escape(self) -> None:
+        """Esc: cancel the open tab's tool in progress, else clear the selection."""
+        if self.current_tab is None or not self.current_tab.escape():
+            self.selection.clear()
 
     def _update_badges(self) -> None:
         for i, key in enumerate(self.tab_order):

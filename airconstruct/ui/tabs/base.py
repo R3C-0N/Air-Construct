@@ -12,7 +12,7 @@ on ``self.ctx``.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QAction
@@ -23,6 +23,9 @@ from ..context import AppContext
 from ..theme import set_prop
 from ..view import SceneItem
 from ..widgets.card import Card
+
+if TYPE_CHECKING:
+    from ..viewport import Drag
 
 
 class StepTab(QObject):
@@ -52,6 +55,23 @@ class StepTab(QObject):
     def scene(self) -> list[SceneItem] | None:
         """What the viewport draws while this tab is open; None = the model geometry."""
         return None
+
+    def drag(self, key: str, point: tuple) -> Drag | None:
+        """The mouse was pressed on the scene item ``key`` at ``point``: return a
+        :class:`~airconstruct.ui.viewport.Drag` to move it with the mouse, or None to
+        let the camera turn."""
+        return None
+
+    def click(self, pick) -> bool:
+        """A click in the 3D view (:class:`~airconstruct.ui.view.Pick`). Return True
+        when this tab used it (a tool such as placing a probe); False lets the
+        viewport select what was clicked."""
+        return False
+
+    def escape(self) -> bool:
+        """Esc was pressed: return True if this tab cancelled something (a tool in
+        progress); otherwise the selection is cleared."""
+        return False
 
     # ---- checks, actions --------------------------------------------------
     def alerts(self, project) -> Iterable[Alert]:
