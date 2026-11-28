@@ -66,38 +66,6 @@ jobs:
             sleep 60
           done
           exit 1
-      - name: Qt system libraries (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
-      - run: pip install -e ".[dev,ui]"
-      - run: ruff check .
-      - run: pytest -q
-        env:
-          QT_QPA_PLATFORM: offscreen
-
-  openfoam:
-    name: OpenFOAM simulation tests
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install OpenFOAM (openfoam.com)
-        # dl.openfoam.com and its sourceforge mirror often time out or answer with an
-        # HTML page: fail loudly on HTTP errors and retry the whole install a few times.
-        run: |
-          for attempt in 1 2 3; do
-            curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 \
-                https://dl.openfoam.com/add-debian-repo.sh -o /tmp/add-openfoam-repo.sh \
-              && sudo bash /tmp/add-openfoam-repo.sh \
-              && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 \
-                   install -y openfoam2406-default \
-              && exit 0
-            echo "OpenFOAM install failed (attempt $attempt), retrying in 30 s"
-            sleep 30
-          done
-          exit 1
       - name: Qt system libraries
         run: sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
       - run: pip install -e ".[dev,ui]"
