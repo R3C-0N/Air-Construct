@@ -36,6 +36,7 @@ def self_test() -> int:
         case,
         cli,
         estimate,
+        foam_setup,
         materials,
         mesh,
         results,

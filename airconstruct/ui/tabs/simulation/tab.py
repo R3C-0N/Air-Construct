@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ....foam_setup import plan_for, restart_windows
 from ...alerts import ERROR
 from ...run import PHASE_KEYS, format_duration
 from ...theme import COLORS, set_prop
@@ -232,6 +233,10 @@ class SimulationTab(StepTab):
         self.openfoam_dialog: OpenFoamDialog | None = None
         #: injectable for tests: is OpenFOAM reachable now? -> (ok, message)
         self.check_backend = _default_check_backend
+        #: injectable for tests: builds the foam_setup.FoamSetup of "Installer
+        #: automatiquement" (None: the real one), and restarts Windows
+        self.setup_factory = None
+        self.restart_windows = restart_windows
         bashrc = ctx.settings.value("simulation/foam_bashrc", "", type=str)
         if bashrc and not os.environ.get("AIRCONSTRUCT_FOAM_BASHRC"):
             os.environ["AIRCONSTRUCT_FOAM_BASHRC"] = bashrc
@@ -291,10 +296,23 @@ class SimulationTab(StepTab):
     def closing(self) -> None:
         for t in (self._scene_timer, self._probe_timer, self._clock, self._chart_timer):
             t.stop()
+        if self.openfoam_dialog is not None:
+            self.openfoam_dialog.shutdown()
         for dlg in (self.failure_dialog, self.openfoam_dialog):
             if dlg is not None:
                 dlg.close()
         self.chart.dispose()
+
+    def offer_setup(self) -> OpenFoamDialog | None:
+        """``--setup-openfoam`` (end of the Windows installer, or after the restart that
+        WSL2 needed): open the installation dialog if OpenFOAM is still missing."""
+        try:
+            ok, msg = self.check_backend()
+        except Exception as exc:  # noqa: BLE001
+            ok, msg = False, str(exc)
+        if ok:
+            return None
+        return self.show_openfoam_dialog(msg)
 
     def scene(self):
         case = self.ctx.project.last_valid_case
@@ -445,10 +463,15 @@ class SimulationTab(StepTab):
 
     # ---- errors
     def show_openfoam_dialog(self, message: str) -> OpenFoamDialog:
-        if self.openfoam_dialog is not None:
-            self.openfoam_dialog.close()
+        old = self.openfoam_dialog
+        if old is not None and old.running():  # an installation is going on: show it
+            old.open()
+            return old
+        if old is not None:
+            old.close()
         dlg = OpenFoamDialog(openfoam_help(message), lambda: self.check_backend(), self._set_bashrc,
-                             self.card.window())
+                             self.card.window(), plan=plan_for(message),
+                             setup_factory=self.setup_factory, restart=self.restart_windows)
         dlg.accepted.connect(self._refresh)
         self.openfoam_dialog = dlg
         dlg.open()

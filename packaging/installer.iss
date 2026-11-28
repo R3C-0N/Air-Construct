@@ -43,7 +43,9 @@ Name: "{group}\Uninstall Air-Construct"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\Air-Construct"; Filename: "{app}\Air-Construct.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\Air-Construct.exe"; Description: "{cm:LaunchProgram,Air-Construct}"; Flags: nowait postinstall skipifsilent
+; --setup-openfoam: once open, Air-Construct checks WSL2 and OpenFOAM and, if one is
+; missing, offers to install it (UAC prompt, restart and resume handled by the app).
+Filename: "{app}\Air-Construct.exe"; Parameters: "--setup-openfoam"; Description: "{cm:LaunchProgram,Air-Construct}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function WslInstalled(): Boolean;
@@ -55,6 +57,15 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssPostInstall) and (not WizardSilent()) and (not WslInstalled()) then
     MsgBox('Air-Construct runs OpenFOAM inside WSL2, which was not found on this PC.' + #13#10 +
-           'Install it from an administrator PowerShell with:  wsl --install -d Ubuntu' + #13#10 +
-           'then install OpenFOAM inside Ubuntu (see the README).', mbInformation, MB_OK);
+           'When Air-Construct starts it will offer to install WSL2, Ubuntu and OpenFOAM' + #13#10 +
+           'for you (administrator rights and a restart of Windows will be needed).',
+           mbInformation, MB_OK);
+end;
+
+// the resume entry left by an installation of WSL2 waiting for its restart
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\RunOnce',
+                   'AirConstructSetup');
 end;
