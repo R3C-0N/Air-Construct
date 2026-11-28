@@ -4,7 +4,9 @@ Owned by: thread "Modèle" (see docs/ui-architecture.md).
 
 Left: the model tree (groups, hidden and locked parts) and the parts library.
 Middle: the shared 3D view with move / resize handles (snapped to a grid, Alt = free)
-and this tab's toolbar. Right: the inspector of the selected parts (several at once)
+and this tab's toolbar. A part can also be dragged with the mouse: press on it and
+move, it slides on the plane facing the camera (Shift: up and down), snapped to the
+grid and stuck to the neighbour or wall it nearly touches (Alt: free). Right: the inspector of the selected parts (several at once)
 and the live model checks (overlaps, parts out of the box).
 
 Every change is one undoable project edit; the operations themselves are plain
@@ -35,10 +37,13 @@ from PySide6.QtWidgets import (
 from ...alerts import Alert
 from ...selection import component_key, parse_key
 from ...theme import COLORS, set_prop
-from ...view import PASSIVE_COLORS, SceneItem, _heat_color, geometry_items
+from ...view import PASSIVE_COLORS, SceneItem, _heat_color, geometry_items, part_edges, part_mesh
+from ...viewport import Drag
 from ...widgets.card import Card
 from ..base import StepTab
+from . import cadparts
 from . import geometry as geo
+from .cad_dialog import ask_cad_import
 from .checks import model_alerts
 from .dialogs import ArrayDialog, MaterialDialog
 from .handles import BoxHandles
@@ -56,6 +61,7 @@ class ModelTab(StepTab):
 
     def __init__(self, ctx) -> None:
         super().__init__(ctx)
+        self.ask_cad_import = ask_cad_import  # replaceable, for tests
         self.mode = "select"
         self.isolated: list[str] | None = None
         self.snap_mm = float(ctx.settings.value("model/snap_mm", 5.0))
@@ -193,6 +199,12 @@ class ModelTab(StepTab):
             grid.addWidget(b, i // 2, i % 2)
             self.library_buttons.append(b)
         lib.body.addLayout(grid)
+        self.cad_button = QPushButton("Importer un fichier CAO…")
+        self.cad_button.setToolTip("STEP ou STL : chaque corps devient une pièce à sa forme "
+                                   "réelle, posée au fond de la boîte.")
+        self.cad_button.clicked.connect(lambda: self.import_cad())
+        lib.body.addWidget(self.cad_button)
+        self.library_buttons.append(self.cad_button)
         self._left.addWidget(tree_card)
         self._left.addWidget(lib)
         self._left.setStretchFactor(0, 1)
@@ -235,6 +247,7 @@ class ModelTab(StepTab):
         i.position_requested.connect(self.set_position)
         i.size_requested.connect(self.set_size)
         i.enclosure_requested.connect(self.set_enclosure)
+        i.drop_shape_requested.connect(self.drop_shape)
         i.duplicate_button.clicked.connect(self.duplicate)
         i.array_button.clicked.connect(self.array)
         i.hide_button.clicked.connect(self.toggle_hidden)
@@ -402,6 +415,47 @@ class ModelTab(StepTab):
             self.edit(label, move)
         self._update_handles()  # put the handles back on the data
 
+    # ------------------------------------------------------------------ mouse drag
+    def drag(self, key: str, point: tuple) -> Drag | None:
+        """Press on a part in the 3D view: drag it (with the other selected parts
+        when it is selected, and their groups). Locked parts and the enclosure let
+        the camera turn instead."""
+        kind, name = parse_key(key)
+        if kind != "component" or self.ctx.runner.running or self.ctx.project.locked:
+            return None
+        data = self.ctx.project.get() or {}
+        locked = set(geo.read_meta(data)["locked"])
+        if name in locked or geo.comp(data, name) is None:
+            return None
+        targets = self.handle_targets() if name in self.parts else [name]
+        members = [m for m in geo.with_groups(data, targets) if m not in locked]
+        self.handles.show(None)  # put back when the drag ends
+        return Drag(keys=[component_key(m) for m in members],
+                    constrain=lambda d, free: tuple(self.drag_delta(targets, d, free)),
+                    finish=lambda d, free: self.drag_finish(name, targets, d, free),
+                    cancel=self._update_handles)
+
+    def drag_delta(self, targets: list[str], raw, free: bool = False) -> list[float]:
+        """The move of a mouse drag: whole grid steps, then stuck to a neighbour or a
+        wall within reach (:func:`geometry.magnet`); exactly the mouse with Alt."""
+        if free:
+            return [float(v) for v in raw]
+        data = self.ctx.project.get() or {}
+        d = [0.0 if abs(v) < 1e-7 else geo.snap(v, self.snap) for v in raw]
+        return geo.magnet(data, targets, d, geo.magnet_tolerance(data))
+
+    def drag_finish(self, name: str, targets: list[str], raw, free: bool = False) -> bool:
+        """Mouse released: one undoable move. True if the parts moved."""
+        delta = self.drag_delta(targets, raw, free)
+        moved = []
+        if any(abs(v) > geo.EPS for v in delta):
+            label = f"Déplacer {targets[0]}" if len(targets) == 1 else "Déplacer la sélection"
+            moved = self.edit(label, lambda d: geo.move(d, targets, delta)) or []
+        if moved and name not in self.parts:
+            self.ctx.selection.set([component_key(name)])
+        self._update_handles()
+        return bool(moved)
+
     # ------------------------------------------------------------------ operations
     def add_preset(self, kind: str) -> str | None:
         from .library import PRESET_BY_KIND
@@ -413,6 +467,32 @@ class ModelTab(StepTab):
         if name:
             self.ctx.selection.set([component_key(name)])
         return name
+
+    def import_cad(self, path=None) -> list[str]:
+        """Add the bodies of a CAD file as parts (dialog: units, material). The parts
+        keep their relative positions; the enclosure grows if they do not fit.
+        ``ask_cad_import`` is replaceable, for tests."""
+        choice = self.ask_cad_import(self._left, path)
+        if choice is None:
+            return []
+        before = geo.enclosure(self.ctx.project.get() or {})
+        names = self.edit(f"Importer {choice.source}",
+                          lambda d: cadparts.add_bodies(d, choice.bodies, choice.source,
+                                                        choice.material)) or []
+        if names:
+            self.ctx.selection.set([component_key(n) for n in names])
+            after = geo.enclosure(self.ctx.project.get() or {})
+            if after != before and all(v > 0 for v in before):
+                u = self.ctx.units
+                self.ctx.show_message(
+                    "Enceinte agrandie pour contenir les pièces importées : "
+                    + " × ".join(u.fmt_length(v) for v in after))
+        return names
+
+    def drop_shape(self) -> None:
+        parts = [p for p in self.parts if cadparts.has_shape(self.ctx.project.get() or {}, p)]
+        if parts:
+            self.edit("Remplacer par la boîte", lambda d: cadparts.drop_shape(d, parts))
 
     def duplicate(self) -> list[str]:
         parts = self.parts
@@ -633,9 +713,10 @@ def scene_items(data: dict, case, isolated: list[str] | None = None) -> list[Sce
         lo, hi = geo.lo_hi(c)
         if any(hi[i] - lo[i] <= 0 for i in range(3)):
             continue
-        mesh = pv.Box((lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]))
+        shape = c.get("shape") if isinstance(c.get("shape"), dict) else None
+        mesh = part_mesh(lo, hi, shape)
         edge = COLORS["error"] if name in bad else "#333333"
-        kw = {"show_edges": True, "edge_color": edge, "line_width": 2 if name in bad else 1}
+        kw = part_edges(shape, edge, 2 if name in bad else 1)
         power = geo._f(c.get("power"))
         if power > 0:
             items.append(SceneItem(name, mesh, _heat_color(power, p_max), kwargs=kw,

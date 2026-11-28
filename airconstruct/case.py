@@ -4,7 +4,8 @@ Owned by: core. A case is saved as YAML and validated with pydantic.
 
 Coordinate system: metres, z is up (gravity along -z). The enclosure is the box
 [0, size.x] x [0, size.y] x [0, size.z]. Every component is an axis-aligned box
-inside it. Openings (inlets/outlets) are rectangles lying on one enclosure face.
+inside it, optionally carrying the real shape of an imported CAD part (fitted in
+its box, see :mod:`airconstruct.cad`). Openings (inlets/outlets) are rectangles lying on one enclosure face.
 """
 
 from __future__ import annotations
@@ -53,11 +54,41 @@ class Box(BaseModel):
         return (o.x + s.x, o.y + s.y, o.z + s.z)
 
 
+class Shape(BaseModel):
+    """Real shape of a component, from an imported CAD file: a closed triangle surface
+    fitted onto the component's box (scaled per axis from its own bounding box), so
+    moving or resizing the box moves or stretches it. The mesh gives the part the
+    cells whose centre is inside the surface.
+
+    ``data`` holds the triangles (float32, zlib, base64, see :func:`cad.encode`);
+    ``source`` is the file it came from and ``triangles`` their number, for display."""
+
+    data: str
+    source: str | None = None
+    triangles: int | None = None
+
+    @field_validator("data")
+    @classmethod
+    def _readable(cls, v: str) -> str:
+        from .cad import decode
+
+        if len(decode(v)) < 4:
+            raise ValueError("a shape needs at least 4 triangles")
+        return v
+
+    def triangles_in(self, box: Box):
+        """The triangles (n, 3, 3) fitted onto ``box``."""
+        from .cad import placed
+
+        return placed(self.data, box.min, box.max)
+
+
 class Component(BaseModel):
     """A solid part (chip, heatsink, board...). power > 0 makes it a heat source.
 
     ``material`` is a built-in solid (materials.SOLIDS) or one of the case's own
-    ``materials`` (checked by :class:`Case`). ``max_temperature`` is the highest
+    ``materials`` (checked by :class:`Case`). With a ``shape`` the part is the imported
+    CAD surface fitted in ``box``, otherwise the whole box. ``max_temperature`` is the highest
     temperature the part may reach [degC]: a pass/fail criterion for the results,
     not used by the solver."""
 
@@ -66,6 +97,7 @@ class Component(BaseModel):
     material: str = "aluminium"
     power: float = 0.0  # dissipated power [W]
     max_temperature: float | None = None  # [degC], criterion only
+    shape: Shape | None = None  # imported CAD shape; None = the whole box
 
 
 class OpeningKind(str, Enum):
@@ -367,12 +399,18 @@ class Case(BaseModel):
         return {"walls": list(Face)}
 
     def probe_region(self, probe: Probe) -> str:
-        """Region holding the probe: the first component listed whose box contains it
-        (overlaps belong to the first one, as in the mesh), else the air."""
+        """Region holding the probe: the first component listed whose box (or imported
+        shape) contains it (overlaps belong to the first one, as in the mesh), else
+        the air."""
         pt = probe.point.as_tuple()
         for c in self.components:
             lo, hi = c.box.min, c.box.max
             if all(lo[i] <= pt[i] <= hi[i] for i in range(3)):
+                if c.shape is not None:
+                    from .cad import voxelize
+
+                    if not voxelize(c.shape.triangles_in(c.box), *([v] for v in pt))[0, 0, 0]:
+                        continue
                 return c.name
         return self.fluid_region
 

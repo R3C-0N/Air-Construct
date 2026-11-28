@@ -162,5 +162,6 @@ def templates(example: dict) -> list[Template]:
         Template("rack", "Rack 1U", "440 × 44 mm, 2 ventilos", _rack_1u()),
         Template("psu", "Boîtier d’alimentation", "transfo, régulateurs",
                  _power_supply()),
-        Template("cad", "Importer un fichier CAO", "STEP / STL · plus tard", {}, enabled=False),
+        Template("cad", "Importer un fichier CAO", "STEP / STL, une pièce par corps",
+                 {"name": "projet_cao"}),
     ]

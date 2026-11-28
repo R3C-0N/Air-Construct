@@ -349,14 +349,17 @@ class LiveCard(Card):
                 return dict(p["point"])
         return {a: float(enc[a]) / 2 for a in "xyz"}
 
-    def add_probe(self) -> str | None:
+    def add_probe(self, point: dict | None = None) -> str | None:
+        """A new probe at ``point`` ({x, y, z}, metres), by default near the selection
+        (:meth:`new_probe_point`). Returns its name, None if refused."""
         if self.ctx.project.locked:
             return None
         names = {p["name"] for p in self._probes()}
         n = 1
         while f"S{n}" in names:
             n += 1
-        name, point = f"S{n}", self.new_probe_point()
+        name = f"S{n}"
+        point = dict(point) if point is not None else self.new_probe_point()
 
         def fn(d: dict) -> None:
             d.setdefault("probes", []).append({"name": name, "point": point})

@@ -7,6 +7,8 @@ Owned by: thread "Simulation" (see docs/ui-architecture.md).
   run / stop / resume buttons, convergence chart (pyqtgraph), solver log;
 - left: solver settings, live part temperatures and probes, run queue;
 - 3D view: the parts coloured and labelled with their live max temperature, the probes;
+  "Poser une sonde" (P) then a click on a part or in the box puts a probe there
+  (:mod:`.placement`), a probe is dragged with the mouse to move it;
 - errors: "OpenFOAM est introuvable" (WSL or Linux, with the commands to copy) and
   "Le calcul a échoué" (probable cause from ``airconstruct.diagnose``, end of the log,
   "Aller à la pièce fautive").
@@ -34,11 +36,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ....foam_setup import plan_for, restart_windows
 from ...alerts import ERROR
 from ...run import PHASE_KEYS, format_duration
+from ...selection import parse_key
 from ...theme import COLORS, set_prop
+from ...viewport import Drag
 from ...widgets.card import Card, CardColumn
 from ..base import StepTab
+from . import placement
 from .chart import ConvergenceChart
 from .dialogs import FailureDialog, OpenFoamDialog
 from .errors import failure_report, openfoam_help
@@ -49,6 +55,8 @@ PHASE_NAMES = {"mesh": "Maillage", "flow": "Écoulement", "energy": "Températur
 SCENE_INTERVAL_MS = 1500  # live 3D colours: at most this often
 PROBE_INTERVAL_MS = 2000  # probe files read at most this often
 LOG_TAIL = 30
+PLACE_TIP = ("Poser une sonde : cliquez ensuite sur une pièce ou dans le boîtier (P). "
+             "Une sonde se déplace en la glissant.")
 
 
 def fmt_int(n: int) -> str:
@@ -213,7 +221,10 @@ class SimulationTab(StepTab):
         tl.setContentsMargins(0, 0, 0, 0)
         self.probe_tool = QToolButton()
         self.probe_tool.setText("Poser une sonde")
-        self.probe_tool.setToolTip("Poser une sonde au centre de la sélection (P)")
+        self.probe_tool.setCheckable(True)
+        self.probe_tool.setToolTip(PLACE_TIP if self.ctx.viewport.scene.plotter is not None
+                                   else "Poser une sonde au centre de la sélection (P)")
+        self.placing = False  # waiting for the click that places a probe
         self.labels_tool = QToolButton()
         self.labels_tool.setText("Températures sur les pièces")
         self.labels_tool.setCheckable(True)
@@ -224,14 +235,18 @@ class SimulationTab(StepTab):
         tl.addWidget(self.labels_tool)
         self.probe_action = QAction("Poser une sonde", self)
         self.probe_action.setShortcut(QKeySequence("P"))
-        self.probe_action.triggered.connect(self.live_card.add_probe)
-        self.probe_tool.clicked.connect(self.live_card.add_probe)
+        self.probe_action.triggered.connect(self.probe_tool_clicked)
+        self.probe_tool.clicked.connect(lambda _c=False: self.probe_tool_clicked())
         self.labels_tool.toggled.connect(self._on_labels_toggled)
 
         self.failure_dialog: FailureDialog | None = None
         self.openfoam_dialog: OpenFoamDialog | None = None
         #: injectable for tests: is OpenFOAM reachable now? -> (ok, message)
         self.check_backend = _default_check_backend
+        #: injectable for tests: builds the foam_setup.FoamSetup of "Installer
+        #: automatiquement" (None: the real one), and restarts Windows
+        self.setup_factory = None
+        self.restart_windows = restart_windows
         bashrc = ctx.settings.value("simulation/foam_bashrc", "", type=str)
         if bashrc and not os.environ.get("AIRCONSTRUCT_FOAM_BASHRC"):
             os.environ["AIRCONSTRUCT_FOAM_BASHRC"] = bashrc
@@ -288,13 +303,114 @@ class SimulationTab(StepTab):
     def activated(self) -> None:
         self._refresh()
 
+    def deactivated(self) -> None:
+        self.stop_placing()
+
+    def escape(self) -> bool:
+        if self.placing:
+            self.stop_placing()
+            self.ctx.show_message("Pose de la sonde annulée.")
+            return True
+        return False
+
+    # ---- probes with the mouse
+    def probe_tool_clicked(self) -> None:
+        """"Poser une sonde" (P): wait for a click in the 3D view (again: cancel).
+        Without a 3D view the probe goes near the selection right away."""
+        if self.ctx.viewport.scene.plotter is None:
+            self.probe_tool.setChecked(False)
+            self.live_card.add_probe()
+        elif self.placing:
+            self.escape()
+        else:
+            self.start_placing()
+
+    def start_placing(self) -> bool:
+        if self.ctx.project.locked:
+            self.probe_tool.setChecked(False)
+            self.ctx.show_message("Les sondes se posent avant le calcul.")
+            return False
+        self.placing = True
+        self.probe_tool.setChecked(True)
+        self.ctx.show_message("Cliquez sur une pièce ou dans le boîtier pour poser la sonde "
+                              "(Alt : dans la pièce, Échap : annuler).", 20000)
+        return True
+
+    def stop_placing(self) -> None:
+        self.placing = False
+        self.probe_tool.setChecked(False)
+
+    def click(self, pick) -> bool:
+        if not self.placing:
+            return False
+        data = self.ctx.project.data
+        kind, name = parse_key(pick.key) if pick.key else ("", "")
+        point = None
+        if kind == "component" and pick.point is not None:
+            point = placement.on_part(data, name, pick.point, pick.normal, pick.direction,
+                                      inside=pick.free)
+        if point is None:
+            point = placement.in_air(data, pick.origin, pick.direction)
+        if point is None:
+            self.ctx.show_message("Cliquez sur une pièce ou dans le boîtier "
+                                  "(Échap : annuler).")
+            return True
+        self.stop_placing()
+        name = self.live_card.add_probe(point)
+        if name:
+            self.ctx.show_message(f"Sonde {name} posée. Glissez-la pour la déplacer.")
+        return True
+
+    def drag(self, key: str, point: tuple) -> Drag | None:
+        """A probe follows the mouse (inside the box); refused during a run."""
+        kind, name = parse_key(key)
+        if kind != "probe" or self.ctx.project.locked:
+            return None
+        probe = next((p for p in self.ctx.project.get("probes") or [] if p.get("name") == name),
+                     None)
+        if probe is None:
+            return None
+        start = [float(probe["point"].get(a, 0.0)) for a in "xyz"]
+
+        def constrain(delta, free):
+            data = self.ctx.project.data
+            return tuple(n - s for n, s in zip(placement.dragged(data, start, delta, free), start))
+
+        def finish(delta, free):
+            new = placement.dragged(self.ctx.project.data, start, delta, free)
+
+            def fn(d: dict) -> None:
+                for p in d.get("probes") or []:
+                    if p.get("name") == name:
+                        p["point"] = dict(zip("xyz", new))
+
+            ok = self.ctx.project.edit(f"Déplacer la sonde {name}", fn)
+            if ok:
+                self.ctx.selection.set([key])
+            return ok
+
+        return Drag(keys=[key], constrain=constrain, finish=finish)
+
     def closing(self) -> None:
         for t in (self._scene_timer, self._probe_timer, self._clock, self._chart_timer):
             t.stop()
+        if self.openfoam_dialog is not None:
+            self.openfoam_dialog.shutdown()
         for dlg in (self.failure_dialog, self.openfoam_dialog):
             if dlg is not None:
                 dlg.close()
         self.chart.dispose()
+
+    def offer_setup(self) -> OpenFoamDialog | None:
+        """``--setup-openfoam`` (end of the Windows installer, or after the restart that
+        WSL2 needed): open the installation dialog if OpenFOAM is still missing."""
+        try:
+            ok, msg = self.check_backend()
+        except Exception as exc:  # noqa: BLE001
+            ok, msg = False, str(exc)
+        if ok:
+            return None
+        return self.show_openfoam_dialog(msg)
 
     def scene(self):
         case = self.ctx.project.last_valid_case
@@ -445,10 +561,15 @@ class SimulationTab(StepTab):
 
     # ---- errors
     def show_openfoam_dialog(self, message: str) -> OpenFoamDialog:
-        if self.openfoam_dialog is not None:
-            self.openfoam_dialog.close()
+        old = self.openfoam_dialog
+        if old is not None and old.running():  # an installation is going on: show it
+            old.open()
+            return old
+        if old is not None:
+            old.close()
         dlg = OpenFoamDialog(openfoam_help(message), lambda: self.check_backend(), self._set_bashrc,
-                             self.card.window())
+                             self.card.window(), plan=plan_for(message),
+                             setup_factory=self.setup_factory, restart=self.restart_windows)
         dlg.accepted.connect(self._refresh)
         self.openfoam_dialog = dlg
         dlg.open()

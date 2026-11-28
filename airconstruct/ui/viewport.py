@@ -6,11 +6,19 @@ There is ONE viewport (one OpenGL context) for the whole window: tabs do not cre
 their own. A tab says what to draw through :meth:`StepTab.scene` and may put its
 own controls above the view with :meth:`StepTab.viewport_toolbar`. The viewport
 draws the selected objects highlighted and turns clicks into selection changes.
+
+Mouse in the view: a click selects (Ctrl or Shift adds, a click on nothing clears),
+a double click frames the object, a press and drag on an object the open tab can
+move (:meth:`StepTab.drag`) moves it, anything else turns the camera. The open tab
+may also take clicks for a tool of its own (:meth:`StepTab.click`, e.g. placing a
+probe).
 """
 
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -24,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from .selection import Selection
-from .view import CAMERAS, SceneItem, SceneView
+from .view import CAMERAS, Pick, SceneItem, SceneView
 
 HIGHLIGHT = "#1D4ED8"
 
@@ -44,6 +52,20 @@ def highlight_items(items: list[SceneItem], keys: list[str]) -> list[SceneItem]:
             kw.update(show_edges=True, edge_color=HIGHLIGHT, line_width=3)
             out.append(dataclasses.replace(it, kwargs=kw, opacity=max(it.opacity, it.highlight_opacity)))
     return out
+
+
+@dataclass
+class Drag:
+    """What a tab returns from :meth:`StepTab.drag` to move objects with the mouse.
+
+    The mouse moves on a plane through the grabbed point; ``delta`` is how far it
+    went from that point (metres, x y z) and ``free`` is True when Alt is held (no
+    snapping)."""
+
+    keys: list[str]  # selection keys of the items that follow the mouse
+    finish: Callable[[tuple, bool], bool]  # (delta, free) -> True if the model changed
+    constrain: Callable[[tuple, bool], tuple] | None = None  # snapped delta, shown live
+    cancel: Callable[[], None] | None = None  # released without moving
 
 
 class Viewport(QWidget):
@@ -96,7 +118,15 @@ class Viewport(QWidget):
         layout.addWidget(self.toolbar_card)
         layout.addWidget(self.scene, 1)
 
-        self.scene.picked.connect(self._on_picked)
+        #: the open tab's hooks (set by the window): drag (key, point) -> Drag | None,
+        #: click (Pick) -> bool (True = the tab used the click)
+        self.drag_handler: Callable[[str, tuple], Drag | None] | None = None
+        self.click_handler: Callable[[Pick], bool] | None = None
+        self.drag: Drag | None = None  # the drag in progress
+        self.scene.clicked.connect(self._on_clicked)
+        self.scene.drag_start = self.drag_start
+        self.scene.drag_move = self.drag_move
+        self.scene.drag_end = self.drag_end
         selection.changed.connect(lambda _keys: self._redraw())
 
     def set_tab_toolbar(self, widget: QWidget | None) -> None:
@@ -134,8 +164,40 @@ class Viewport(QWidget):
         self.scene.draw(highlight_items(self.items, self.selection.keys), reset_camera)
         self.redrawn.emit()
 
-    def _on_picked(self, key, additive: bool) -> None:
-        self.selection.select(key, additive)
+    def _on_clicked(self, pick: Pick) -> None:
+        if self.click_handler is not None and self.click_handler(pick):
+            return
+        if pick.double and pick.key is not None:
+            self.frame([pick.key])
+            return
+        self.selection.select(pick.key, pick.additive)
+
+    # ---- dragging objects with the mouse (the scene view calls these; so do tests)
+    def drag_start(self, key: str, point: tuple) -> bool:
+        """A press on the item ``key`` at ``point``: True if the open tab drags it."""
+        self.drag = self.drag_handler(key, tuple(point)) if self.drag_handler else None
+        self.scene.drag_keys = list(self.drag.keys) if self.drag else []
+        return self.drag is not None
+
+    def drag_move(self, delta: tuple, free: bool = False) -> tuple:
+        """The mouse moved ``delta`` from the grabbed point; returns the move shown."""
+        if self.drag is None:
+            return tuple(delta)
+        if self.drag.constrain is None:
+            return tuple(delta)
+        return tuple(self.drag.constrain(tuple(delta), free))
+
+    def drag_end(self, delta: tuple, free: bool = False) -> bool:
+        """Mouse released: the tab turns the move into one edit. True if the model
+        changed."""
+        drag, self.drag = self.drag, None
+        if drag is None:
+            return False
+        if all(abs(v) < 1e-12 for v in delta):
+            if drag.cancel is not None:
+                drag.cancel()
+            return False
+        return bool(drag.finish(tuple(delta), free))
 
     def close_plotter(self) -> None:
         self.scene.close_plotter()

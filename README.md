@@ -18,7 +18,8 @@ case.yaml ──> mesh.py ──> foam/writer.py ──> runner.py ──> resul
 
 - `airconstruct/case.py`: the case model (YAML), single source of truth.
 - `airconstruct/materials.py`: material library.
-- `airconstruct/mesh.py`: multi-region mesh from axis-aligned boxes.
+- `airconstruct/mesh.py`: multi-region mesh from axis-aligned boxes (and imported shapes).
+- `airconstruct/cad.py`: CAD import (STL, STEP), shapes stored in the case, voxelization.
 - `airconstruct/foam/`: OpenFOAM dictionary writer and case setup.
 - `airconstruct/runner.py`: execution (Linux native, Windows through WSL2).
 - `airconstruct/results.py`: post-processing and report.
@@ -35,7 +36,16 @@ case.yaml ──> mesh.py ──> foam/writer.py ──> runner.py ──> resul
 
 Air-Construct runs OpenFOAM through `wsl.exe`. Cases are copied into the Linux
 filesystem (`~/.cache/airconstruct/cases`) to avoid slow `/mnt/c` I/O, and results come
-back next to the case on the Windows side. Setup:
+back next to the case on the Windows side.
+
+Automatic setup: when WSL2, Ubuntu or OpenFOAM is missing, the "OpenFOAM est
+introuvable" dialog of the Simulation step offers **Installer automatiquement**
+(`airconstruct/foam_setup.py`): `wsl --install` with one UAC prompt, a Windows restart
+after which Air-Construct reopens and resumes (`--setup-openfoam`, registered in
+`RunOnce`), the first start of Ubuntu (where you create your Linux user), then OpenFOAM
+installed as root inside the distro. The Windows installer starts the app with
+`--setup-openfoam`, so a fresh PC is offered this right away. On Debian/Ubuntu the same
+dialog installs OpenFOAM through `pkexec`. Manual setup:
 
 ```powershell
 wsl --install -d Ubuntu          # admin PowerShell, then reboot and open Ubuntu once
@@ -57,7 +67,7 @@ Every push to `main` (finished work merged from `develop`, see
 the `Air-Construct-windows-x64` artifact (installer `...-setup.exe`, or a portable `.zip`)
 or `Air-Construct-linux-x64` (`.tar.gz`). Tagging a version `v*` attaches the same
 files to a GitHub release. The installer is per-user and needs no admin rights;
-OpenFOAM still has to be installed in WSL2 (see above).
+the app then offers to install WSL2 and OpenFOAM (see above).
 
 To build it yourself: `pip install ".[ui,results]" pyinstaller` then
 `pyinstaller packaging/airconstruct.spec --noconfirm`; the app is in
@@ -134,6 +144,32 @@ run or after; `Summary.probes` holds the last values.
 (or `cell_size`) over the component, growing back to the bulk size over `margin`
 (default 3 bulk cells) with graded blockMesh segments. The grid stays structured, so
 the refinement is a slab through the whole enclosure along each axis.
+
+## CAD import (STEP, STL)
+
+Modèle tab > *Importer un fichier CAO…*, the *Importer un fichier CAO* template of
+*Nouveau projet*, or Fichier > Ouvrir on a `.step` / `.stp` / `.stl` file. Each body
+of the file becomes a solid part, at its place (an assembly keeps its layout). STL has
+no unit: the dialog asks (mm by default) and can split a single STL into its closed
+shells; STEP gives its own unit and needs the `cascadio` package (OpenCascade,
+installed with the `ui` extra, or `pip install "airconstruct[cad]"`).
+
+The shape is stored in the case file (`shape.data`: float32 triangles, zlib, base64)
+and fitted onto the part's `box`, so moving or resizing the box moves or stretches it.
+The mesh stays the structured grid: the part gets the cells of its box whose centre
+is inside the surface (a staircase of the real shape, finer with the precision; see the
+mesh cut in the Volume d'air tab). A surface that is not closed may be filled wrongly:
+the import dialog says which. *Remplacer par sa boîte* in the inspector turns the part
+back into a plain block.
+
+## Claude control (MCP)
+
+Claude can drive the open window through an MCP server shipped with the app
+(`Air-Construct-MCP.exe` next to `Air-Construct.exe`, or `airconstruct-mcp` from
+source): look at the 3D view, build the model, set up the air and the mesh, run and
+read the results, while you watch. A "Claude" pill in the top bar shows each action
+and lets you pause it; every change is an undo step. Setup and tool list:
+[docs/claude-mcp.md](docs/claude-mcp.md).
 
 ## Run control and live results
 

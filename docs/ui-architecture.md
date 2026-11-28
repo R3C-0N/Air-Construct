@@ -30,6 +30,7 @@ touching the same files.
 | `ui/viewport.py`, `ui/view.py` | shell | the one 3D viewport, scene items, picking, highlight, camera presets |
 | `ui/run.py`, `ui/worker.py` | shell | `RunController` (start/stop/progress) around the background worker |
 | `ui/statusbar.py` | shell | status card: messages, alerts menu, units menu, shortcuts dialog |
+| `ui/assistant/` | assistant | Claude control: local bridge server running MCP commands in this window, the "Claude" pill of the top bar (see `docs/claude-mcp.md`) |
 | `ui/theme.py`, `ui/fonts/` | shell | colours (`COLORS`), Inter font, the one style sheet |
 | `ui/widgets/` | shared | widgets several tabs use (`Card`, `ObjectTree`, `StepNav`, `ToggleSwitch`); add new shared widgets here |
 | `ui/tabs/base.py` | shell | `StepTab` base class |
@@ -72,6 +73,9 @@ class AirTab(StepTab):
     def right_panel(self): ...         # QWidget or None (hidden)
     def viewport_toolbar(self): ...    # controls shown above the 3D view, or None
     def scene(self): ...               # list[SceneItem] to draw, or None = model geometry
+    def drag(self, key, point): ...    # press on an item: a viewport.Drag to move it, or None
+    def click(self, pick): ...         # a click in 3D for a tool of this tab: True if used
+    def escape(self): ...              # Esc: True if a tool in progress was cancelled
     def alerts(self, project): ...     # this step's checks -> Iterable[Alert]
     def actions(self): ...             # QActions with shortcuts, active while the tab is open
     def activated(self): ...           # tab opened
@@ -126,8 +130,27 @@ dropped from the selection automatically.
 **`ctx.viewport`** (`Viewport`): the only 3D view. Tabs do not create plotters.
 A tab describes the scene with `SceneItem`s (`view.py`); set `key` on an item to make
 it clickable and highlightable. `view.geometry_items(case)` and
-`view.result_items(case, regions, field)` build the standard scenes. Picking emits
-the item's key into the selection (Ctrl or Shift adds). `ctx.viewport.frame(keys=None)`
+`view.result_items(case, regions, field)` build the standard scenes.
+
+Mouse in the view (`SceneView` filters the Qt mouse events before VTK sees them):
+
+- a click (press and release less than 5 px apart) selects the item under the cursor
+  (Ctrl or Shift adds, nothing under the cursor clears); a double click frames it.
+  A wireframe item (the enclosure) only counts on its lines, so clicks inside the box
+  reach the parts. Turning the camera never changes the selection.
+- before that, the open tab's `click(pick)` may take the click for a tool of its own
+  (`view.Pick`: `key`, `point`, `normal`, the ray `origin` / `direction`,
+  `additive`, `free` = Alt, `double`). The Simulation tab places probes this way.
+- a press on an item whose tab's `drag(key, point)` returns a `viewport.Drag(keys,
+  finish, constrain=None, cancel=None)` drags it instead of turning the camera: the
+  mouse moves on the main plane facing the camera through the grabbed point (Shift:
+  a vertical plane, height only), the items `keys` follow it live with the move
+  `constrain(delta, free)` returns, and on release `finish(delta, free)` makes one
+  project edit (return True if the model changed). The Modèle tab drags parts
+  (grid snap and magnet to neighbours and walls, Alt free), the Simulation tab drags
+  probes. Tests drive it with `viewport.drag_start(key, point)`,
+  `drag_move(delta, free)`, `drag_end(delta, free)` and `viewport.scene.click(Pick(...))`
+  (`scene.pick_name(name)` for a plain click). `ctx.viewport.frame(keys=None)`
 points the camera at those objects (default: the selection) and returns their bounds.
 `ctx.viewport.scene.plotter` is the pyvistaqt `QtInteractor` (None when 3D is disabled, as in tests) for widgets
 such as move/resize handles.

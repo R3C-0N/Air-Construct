@@ -8,11 +8,13 @@ tab's left panel, the shared 3D viewport and the tab's right panel, and the stat
 bar (alerts, messages, units, shortcuts). The shell owns the shared state
 (:class:`~airconstruct.ui.context.AppContext`); the tabs own their panels.
 
-Start it with ``airconstruct-gui [case.yaml]`` or ``python -m airconstruct.ui``.
+Start it with ``airconstruct-gui [case.yaml] [--setup-openfoam]`` or ``python -m airconstruct.ui``
+(``--setup-openfoam``: offer to install WSL2 / OpenFOAM if missing, see foam_setup).
 """
 
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -36,7 +38,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import cad
 from ..case import Case
+from ..foam_setup import RESUME_FLAG
 from .alerts import Alert, AlertCenter
 from .context import AppContext, ExpertMode, Services
 from .project import Project
@@ -54,6 +58,7 @@ from .widgets.toggle import ToggleSwitch
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "electronics_box.yaml"
 MAX_RECENT = 8
+OPEN_FILTER = f"Cas Air-Construct (*.yaml *.yml);;{cad.FILE_FILTER}"
 
 
 def default_case() -> Case:
@@ -127,6 +132,7 @@ class MainWindow(QMainWindow):
         open_report: bool = True,
         preview_fn: Callable[[Case], dict[str, float]] | None = None,
         settings: QSettings | None = None,
+        assistant: bool = False,
     ) -> None:
         super().__init__()
         ensure_theme()
@@ -156,9 +162,16 @@ class MainWindow(QMainWindow):
             work_dir=lambda: self.work_dir,
         )
         self.confirm_discard: Callable[[], bool] = self._ask_save_changes
+        from .tabs.model.cad_dialog import ask_cad_import
         from .tabs.model.new_project import ask_new_project
 
         self.ask_new_project = ask_new_project
+        self.ask_cad_import = ask_cad_import
+
+        # Claude control (MCP): started by main(), and when the user turns it on
+        from .assistant import AssistantBridge
+
+        self.assistant = AssistantBridge(self)
 
         self.tabs: dict[str, StepTab] = {}
         self.tab_order: list[str] = []
@@ -191,6 +204,8 @@ class MainWindow(QMainWindow):
         self._update_title()
         self._update_run_action()
         self.refresh_scene(reset_camera=True)
+        if assistant and self.assistant_allowed():
+            self.assistant.start()
 
     # ------------------------------------------------------------------ layout
     def _action(self, text: str, slot, keys=(), parent_menu: QMenu | None = None) -> QAction:
@@ -217,6 +232,12 @@ class MainWindow(QMainWindow):
         self._action("Enregistrer &sous…", self.save_case_as, ["Ctrl+Shift+S"], m)
         m.addSeparator()
         self._action("Dossier des &calculs…", self.choose_work_dir, (), m)
+        self.assistant_action = self._action("Autoriser le pilotage par &Claude",
+                                             self.set_assistant_allowed, (), m)
+        self.assistant_action.setCheckable(True)
+        self.assistant_action.setChecked(self.assistant_allowed())
+        self.assistant_action.setToolTip("Claude (via MCP) peut lire et modifier le projet "
+                                         "ouvert et lancer les calculs, sous vos yeux")
         m.addSeparator()
         self._action("&Quitter", self.close, [QKeySequence.StandardKey.Quit], m)
 
@@ -238,7 +259,7 @@ class MainWindow(QMainWindow):
             sig.connect(self._sync_undo_actions)
         self._sync_undo_actions()
         self.run_action = self._action("Lancer le calcul", self.start_run, ["Ctrl+R"])
-        self._action("Tout désélectionner", self.selection.clear, ["Esc"])
+        self._action("Tout désélectionner", self.escape, ["Esc"])
 
     def _sync_undo_actions(self, *_args) -> None:
         stack, locked = self.project.undo_stack, self.project.locked
@@ -311,6 +332,9 @@ class MainWindow(QMainWindow):
         self.expert.changed.connect(self.expert_check.setChecked)
         tl.addSpacing(8)
         tl.addWidget(self.expert_check)
+        from .assistant import AssistantIndicator
+
+        self.assistant_indicator = AssistantIndicator(self.assistant)
 
         top = QHBoxLayout()
         top.setSpacing(12)
@@ -318,6 +342,7 @@ class MainWindow(QMainWindow):
         top.addStretch(1)
         top.addWidget(self.tab_bar)
         top.addStretch(1)
+        top.addWidget(self.assistant_indicator)
         top.addWidget(tools_card)
 
         # body: tab panels (cards) on each side of the shared viewport
@@ -402,10 +427,17 @@ class MainWindow(QMainWindow):
             if w is not None:
                 stack.setCurrentWidget(w)
         self.viewport.set_tab_toolbar(tab.viewport_toolbar())
+        self.viewport.drag_handler = tab.drag
+        self.viewport.click_handler = tab.click
         for a in tab.actions():
             a.setEnabled(True)
         tab.activated()
         self.refresh_scene()
+
+    def escape(self) -> None:
+        """Esc: cancel the open tab's tool in progress, else clear the selection."""
+        if self.current_tab is None or not self.current_tab.escape():
+            self.selection.clear()
 
     def _update_badges(self) -> None:
         for i, key in enumerate(self.tab_order):
@@ -522,6 +554,8 @@ class MainWindow(QMainWindow):
         return self.new_case(choice)
 
     def load_case(self, path: Path) -> bool:
+        if Path(path).suffix.lower() in cad.SUFFIXES:
+            return self.new_project_from_cad(Path(path))
         if self.runner.running or not self.confirm_discard():
             return False
         try:
@@ -533,9 +567,23 @@ class MainWindow(QMainWindow):
         self.goto_tab(self.tab_order[0])
         return True
 
+    def new_project_from_cad(self, path: Path) -> bool:
+        """A CAD file opened (Fichier > Ouvrir, command line): a new, unsaved project
+        built around its parts, after the import dialog (``ask_cad_import`` is
+        replaceable, for tests)."""
+        from .tabs.model.cadparts import new_project
+
+        if self.runner.running:
+            return False
+        choice = self.ask_cad_import(self, path)
+        if choice is None:
+            return False
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(path).stem).strip("_-")
+        name = stem if re.match(r"^[A-Za-z][A-Za-z0-9_-]*$", stem) else "projet_cao"
+        return self.new_case(new_project(choice.bodies, name, choice.source, choice.material))
+
     def open_case(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Ouvrir un cas", "",
-                                              "Cas Air-Construct (*.yaml *.yml)")
+        path, _ = QFileDialog.getOpenFileName(self, "Ouvrir un cas", "", OPEN_FILTER)
         if path:
             self.load_case(Path(path))
 
@@ -593,6 +641,28 @@ class MainWindow(QMainWindow):
             self.settings.setValue("work_dir", d)
             self.show_message(f"Les calculs sont enregistrés dans {self.work_dir}")
 
+    def offer_openfoam_setup(self):
+        """Go to the Simulation step and offer to install what is missing."""
+        sim = self.tabs.get("simulation")
+        if sim is None:
+            return None
+        self.goto_tab("simulation")
+        return sim.offer_setup()
+
+    # ------------------------------------------------------------------ Claude
+    def assistant_allowed(self) -> bool:
+        return bool(self.settings.value("assistant/enabled", True, type=bool))
+
+    def set_assistant_allowed(self, on: bool) -> None:
+        """Fichier > Autoriser le pilotage par Claude."""
+        self.settings.setValue("assistant/enabled", bool(on))
+        if on:
+            self.assistant.start()
+            self.show_message("Claude peut piloter Air-Construct (serveur MCP airconstruct-mcp)")
+        else:
+            self.assistant.stop()
+            self.show_message("Pilotage par Claude coupé")
+
     def closeEvent(self, event) -> None:
         if self.runner.running:
             ans = QMessageBox.question(self, "Quitter",
@@ -605,6 +675,7 @@ class MainWindow(QMainWindow):
         elif not self.confirm_discard():
             event.ignore()
             return
+        self.assistant.stop()
         for tab in self.tabs.values():
             tab.closing()
         self.viewport.close_plotter()
@@ -616,11 +687,15 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv)
     app.setApplicationName("Air-Construct")
     apply_theme(app)
-    case_path = Path(argv[1]) if len(argv) > 1 else None
-    win = MainWindow()
+    setup = RESUME_FLAG in argv[1:]
+    args = [a for a in argv[1:] if a != RESUME_FLAG]
+    case_path = Path(args[0]) if args else None
+    win = MainWindow(assistant=True)
     if case_path is not None:
         win.load_case(case_path)
     win.show()
+    if setup:  # installer or restart: finish installing WSL2 / OpenFOAM
+        QTimer.singleShot(300, win.offer_openfoam_setup)
     return app.exec()
 
 

@@ -119,6 +119,14 @@ QToolButton::menu-indicator {{ image: none; width: 0; }}
 QToolButton[kind="segment"] {{ font-size: 12px; min-height: 32px; }}
 QToolButton[kind="segment"]:checked {{ background: {c["accent_soft"]}; color: {c["accent"]}; }}
 
+/* "Claude" pill of the top bar (ui/assistant/indicator.py) */
+QToolButton#assistant {{ border-radius: 17px; min-height: 34px; padding: 0 14px;
+                        background: {c["accent_soft"]}; color: {c["accent"]}; }}
+QToolButton#assistant[state="active"] {{ background: {c["accent"]}; color: white; }}
+QToolButton#assistant[state="error"] {{ background: {c["warning_soft"]};
+                                       color: {c["warning_soft_text"]}; }}
+QToolButton#assistant[state="paused"] {{ background: {c["hover"]}; color: {c["muted"]}; }}
+
 /* step navigation (top bar) */
 QFrame#stepNav {{ background: {c["card"]}; border: 1px solid {c["card_border"]};
                  border-radius: 22px; }}

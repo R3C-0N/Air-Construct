@@ -8,6 +8,8 @@ executable cannot do on its own:
 - ``-c CODE``: some modules probe features in a child process with
   ``[sys.executable, "-c", code]`` (results.rendering_available). In a frozen app
   sys.executable is this program, so it must behave like ``python -c``.
+- ``Air-Construct-MCP`` (same program, console build) or ``--mcp``: the MCP server
+  Claude starts over stdio (:mod:`airconstruct.assistant.mcp_server`).
 - ``--self-test``: import every module, build the main window off screen, close it and
   exit 0. CI runs it on the built executable to catch missing modules or data files.
 """
@@ -36,12 +38,14 @@ def self_test() -> int:
         case,
         cli,
         estimate,
+        foam_setup,
         materials,
         mesh,
         results,
         runner,
         wsl,
     )
+    from airconstruct.assistant import mcp_server  # noqa: F401
     from airconstruct.foam import writer  # noqa: F401
 
     report.append(f"airconstruct {getattr(airconstruct, '__version__', '?')}")
@@ -111,8 +115,20 @@ def _emit(text: str) -> None:
         print(text, flush=True)
 
 
+def is_mcp_program(path: str) -> bool:
+    """Air-Construct-MCP(.exe): the console twin of the app, the MCP server for Claude."""
+    from pathlib import Path
+
+    return Path(path).stem.lower().endswith("-mcp")
+
+
 def main() -> int:
     argv = sys.argv[1:]
+    if is_mcp_program(sys.executable if getattr(sys, "frozen", False) else sys.argv[0]) \
+            or argv[:1] == ["--mcp"]:
+        from airconstruct.assistant.mcp_server import main as mcp_main
+
+        return mcp_main([a for a in argv if a != "--mcp"])
     if argv[:1] == ["-c"] and len(argv) >= 2:
         return _run_code(argv[1], argv[2:])
     if argv[:1] == ["--self-test"]:

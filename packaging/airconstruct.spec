@@ -26,6 +26,7 @@ hiddenimports = (
         "vtkmodules.qt.QVTKRenderWindowInteractor",
         "vtkmodules.util.numpy_support",
         "matplotlib.backends.backend_agg",
+        "cascadio",  # STEP import, imported lazily by airconstruct.cad
     ]
 )
 
@@ -33,6 +34,9 @@ hiddenimports = (
 EXCLUDES = [
     "tkinter", "PyQt5", "PyQt6", "PySide2", "IPython", "pytest", "trame", "jupyter_server",
     "notebook", "ipywidgets",
+    # Type-checking only (pyvista.typing.mypy_plugin imports mypy under TYPE_CHECKING alone;
+    # the plugin module itself is imported at runtime and must stay in the bundle).
+    "mypy", "mypyc",
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
     "PySide6.QtWebChannel", "PySide6.QtWebSockets", "PySide6.Qt3DCore", "PySide6.Qt3DRender",
     "PySide6.Qt3DExtras", "PySide6.Qt3DInput", "PySide6.Qt3DLogic", "PySide6.Qt3DAnimation",
@@ -65,4 +69,15 @@ exe = EXE(  # noqa: F821
     console=False,
     icon=str(icon) if icon.exists() else None,
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="Air-Construct")  # noqa: F821
+# Same program with a console: the MCP server Claude starts over stdin/stdout
+# (launcher.py runs airconstruct.assistant.mcp_server when its name ends in "-MCP").
+mcp_exe = EXE(  # noqa: F821
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name="Air-Construct-MCP",
+    console=True,
+    icon=str(icon) if icon.exists() else None,
+)
+coll = COLLECT(exe, mcp_exe, a.binaries, a.datas, name="Air-Construct")  # noqa: F821
