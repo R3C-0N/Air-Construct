@@ -34,6 +34,9 @@ hiddenimports = (
 EXCLUDES = [
     "tkinter", "PyQt5", "PyQt6", "PySide2", "IPython", "pytest", "trame", "jupyter_server",
     "notebook", "ipywidgets",
+    # Type-checking only. When mypy is installed, PyInstaller follows pyvista's mypy plugin
+    # into mypy's compiled (mypyc) modules and the bundle fails its self-test.
+    "mypy", "mypyc", "pyvista.typing.mypy_plugin",
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
     "PySide6.QtWebChannel", "PySide6.QtWebSockets", "PySide6.Qt3DCore", "PySide6.Qt3DRender",
     "PySide6.Qt3DExtras", "PySide6.Qt3DInput", "PySide6.Qt3DLogic", "PySide6.Qt3DAnimation",

@@ -1,5 +1,5 @@
 ; Inno Setup script for the Windows installer. Built by .github/workflows/build.yml:
-;   iscc /DAppVersion=1.0.0 /DSourceDir=dist\Air-Construct packaging\installer.iss
+;   iscc /DAppVersion=1.1.0 /DSourceDir=dist\Air-Construct packaging\installer.iss
 ; Owned by: workstream "packaging".
 
 #ifndef AppVersion
